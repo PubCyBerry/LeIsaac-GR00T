@@ -1,0 +1,40 @@
+[project]
+name = "robotics-manipulation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "torch==2.7.0",
+    "torchvision==0.22.0",
+    "isaacsim[all,extscache]==5.1.0",
+    "leisaac[isaaclab,lerobot,gr00t]",
+    "h5py<3.16",
+]
+
+[tool.uv.sources]
+torch       = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
+isaacsim    = [{ index = "nvidia" }]
+leisaac = [
+    { git = "https://github.com/LightwheelAI/leisaac", subdirectory = "source/leisaac", tag = "v0.4.0", marker = "sys_platform == 'win32'" },
+]
+
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "nvidia"
+url = "https://pypi.nvidia.com"
+
+[tool.uv]
+override-dependencies = [
+    "packaging>=24.2,<26.0",
+    "numpy==1.26.0",
+]
+build-constraint-dependencies = [
+    "setuptools<82",
+]
