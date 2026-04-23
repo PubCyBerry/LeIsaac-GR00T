@@ -10,6 +10,7 @@ dependencies = [
     "isaacsim[all,extscache]==5.1.0",
     "leisaac[isaaclab,lerobot,gr00t]",
     "h5py<3.16",
+    "hf-xet>=1.4.3",
 ]
 
 [tool.uv.sources]
