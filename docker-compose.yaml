@@ -1,0 +1,35 @@
+services:
+  leisaac-debug:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: leisaac-server:latest
+    container_name: leisaac-server
+    ipc: host
+    stdin_open: true
+    tty: true
+    working_dir: /workspace/repo
+    ports:
+      - "5556:5556"
+    volumes:
+      - .:/workspace/repo
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command:
+      - uv
+      - run
+      - scripts/environments/teleoperation/teleop_se3_agent.py
+      - --task=LeIsaac-SO101-PickOrange-v0
+      - --teleop_device=so101leader
+      - --remote_endpoint=tcp://10.10.40.254:5556
+      - --num_envs=1
+      - --device=cuda
+      - --enable_cameras
