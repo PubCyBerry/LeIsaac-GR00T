@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1.7
+FROM nvcr.io/nvidia/pytorch:25.04-py3
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/workspace/repo/.cache/huggingface \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg git ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# lerobot v0.3.3 을 소스로 클론한 뒤 smolvla + async extras 설치.
+# "package[extra] @ git+url" 구문보다 clone + pip install -e 가 더 안정적.
+RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
+    git clone --branch v0.3.3 --depth 1 \
+        https://github.com/huggingface/lerobot.git /opt/lerobot \
+    && pip install -e "/opt/lerobot[smolvla,async]"
+
+WORKDIR /workspace/repo
+
+CMD ["bash"]

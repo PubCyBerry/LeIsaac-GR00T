@@ -75,3 +75,29 @@ services:
       stack: 67108864
     shm_size: "32gb"
     command: ["bash"]            # 학습/추론 시 docker compose run 으로 별도 명령 주입
+
+  smolvla-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.smolvla
+    image: leisaac-smolvla:latest
+    container_name: leisaac-smolvla
+    runtime: nvidia
+    network_mode: host          # leisaac-debug 와 HTTP(8080) 통신을 host 네트워크로 묶기 위함
+    ipc: host
+    stdin_open: true
+    tty: true
+    working_dir: /workspace/repo
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+      HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+    volumes:
+      - .:/workspace/repo
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    shm_size: "16gb"
+    command: ["bash"]            # 학습/추론 시 docker compose run 으로 별도 명령 주입
