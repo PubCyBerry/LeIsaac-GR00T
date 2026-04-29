@@ -394,6 +394,120 @@ uv run python -c "import h5py; print(h5py.version.hdf5_version)"
 uv run python -c "import re; data = open(r'.venv/Lib/site-packages/isaacsim/kit/dev/libs/sensors/generic_model_output/bin/hdf5.dll','rb').read(); [print(s.decode('ascii','replace')) for s in re.findall(rb'HDF5 library version:[^\x00]+', data)]"
 ```
 
+### Docker 컨테이너에서 Vulkan 초기화 실패 (Linux)
+
+**현상**: `docker compose up` 으로 컨테이너를 띄우면 Isaac Sim 이 다음 에러를 토하면서 GPU 가속을 잃고 software 로 fallback 된다. CUDA 자체는 동작하지만 (nvidia-smi 에서 컨테이너 안의 python 프로세스가 GPU 메모리를 점유) 렌더링·카메라·GPU PhysX 가 모두 죽는다.
+
+**오류 메시지**:
+
+```
+[Error] [carb.graphics-vulkan.plugin] VkResult: ERROR_INCOMPATIBLE_DRIVER
+[Error] [carb.graphics-vulkan.plugin] vkCreateInstance failed.
+                Vulkan 1.1 is not supported, or your driver requires an update.
+[Error] [omni.gpu_foundation_factory.plugin] Failed to create any GPU devices,
+                including an attempt with compatibility mode.
+[Error] [omni.physx.plugin] CUDA libs are present, but no suitable CUDA GPU was found!
+[Warning] [omni.physx.plugin] PhysX warning: GPU solver pipeline failed,
+                switching to software
+```
+
+#### 원인
+
+호스트의 NVIDIA 드라이버가 `.run` 인스톨러로 **`--no-opengl-files`** 옵션과 함께 설치된 경우, `libGLX_nvidia.so.0` / `libnvidia-glcore.so.<ver>` / `libEGL_nvidia.so.0` 같은 그래픽스 유저 스페이스 라이브러리가 호스트에 통째로 빠져 있다. 이 상태에서는 다음이 모두 성립한다:
+
+1. `/etc/vulkan/icd.d/nvidia_icd.json` 은 존재하지만 `library_path: libGLX_nvidia.so.0` 이 가리키는 실제 파일이 호스트에 없다 (dangling pointer).
+2. `nvidia-container-cli list` 출력에 `GLX_nvidia` / `glcore` / `EGL_nvidia` 가 한 줄도 없다 → nvidia-container-runtime 이 컨테이너로 마운트할 라이브러리 자체가 호스트에 없다.
+3. 컨테이너 안에서 `NVIDIA_DRIVER_CAPABILITIES=all` 을 줘도 마운트할 게 없으니 Vulkan ICD 가 동작 못 한다.
+
+기존 설치 옵션은 `/var/log/nvidia-installer.log` 에서 확인할 수 있다:
+
+```bash
+head -15 /var/log/nvidia-installer.log
+# nvidia-installer command line:
+#     ./nvidia-installer
+#     --no-kernel-module
+#     --no-opengl-files       ← 이게 원인
+#     --silent
+```
+
+추가로, docker-compose 의 `deploy.resources.reservations.devices` (`capabilities: [gpu]`) 방식은 `nvidia-container-toolkit ≥ 1.19` 의 일부 환경에서 graphics capability 를 트리거하지 않는다. 같은 호스트에서 legacy 방식 (`runtime: nvidia` + `NVIDIA_VISIBLE_DEVICES=all`) 으로 띄우면 Vulkan ICD JSON 은 마운트되지만, 위 1번 이유로 라이브러리 자체가 없어서 결국 동일하게 실패한다.
+
+#### 해결 방법
+
+같은 버전의 `.run` 인스톨러를 다시 받아서 **커널 모듈은 건드리지 않고 그래픽스 유저 스페이스만** 추가 설치한다.
+
+```bash
+# 1. 기존 컨테이너 정지 + GPU 사용 프로세스 종료 확인
+docker compose down
+nvidia-smi
+
+# 2. 동일 버전 .run 다운로드 (Data Center / Tesla 경로에 호스팅됨)
+cd /tmp
+DRIVER_VER=$(cat /proc/driver/nvidia/version | awk '/NVRM/ {print $8}')
+curl -fLO "https://us.download.nvidia.com/tesla/${DRIVER_VER}/NVIDIA-Linux-x86_64-${DRIVER_VER}.run"
+chmod +x "NVIDIA-Linux-x86_64-${DRIVER_VER}.run"
+
+# 3. --no-opengl-files 빼고 --install-libglvnd 추가, 커널 모듈은 그대로 둠
+sudo sh "./NVIDIA-Linux-x86_64-${DRIVER_VER}.run" \
+    --no-kernel-module \
+    --install-libglvnd \
+    --silent
+```
+
+`--no-kernel-module` 가 핵심이다. 커널 모듈은 이미 동작 중이므로 건드리지 않고, 빠져 있던 GL/Vulkan/EGL 유저 스페이스 라이브러리만 채워 넣는다.
+
+또한 `docker-compose.yaml` 의 GPU 접근 방식은 legacy syntax 로 두는 편이 안정적이다:
+
+```yaml
+services:
+  leisaac-debug:
+    runtime: nvidia
+    network_mode: host          # livestream WebRTC 동적 포트 협상에 유리
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
+    volumes:
+      - /etc/vulkan/icd.d:/etc/vulkan/icd.d:ro   # ICD JSON 안전망
+    # deploy: 블록은 사용하지 않음 (graphics capability 트리거 불안정)
+```
+
+#### 확인 방법
+
+설치 후 호스트에서:
+
+```bash
+ls /usr/lib/x86_64-linux-gnu/libGLX_nvidia.so.0
+ls /usr/lib/x86_64-linux-gnu/libnvidia-glcore.so.${DRIVER_VER}
+ls /usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0
+nvidia-container-cli list | grep -E 'GLX_nvidia|glcore|EGL_nvidia'
+```
+
+세 파일이 모두 존재하고 `nvidia-container-cli list` 에 GLX/glcore/EGL 항목이 출력되면 호스트 측 준비 완료.
+
+컨테이너 안에서:
+
+```bash
+docker compose run --rm leisaac-debug bash -c '
+  ldconfig -p | grep -E "libGLX_nvidia|libvulkan|libnvidia-glcore" &&
+  apt-get install -y vulkan-tools && vulkaninfo --summary
+'
+```
+
+`vulkaninfo --summary` 가 NVIDIA GPU 의 `deviceName` 과 `apiVersion 1.4.x` 를 출력하면 컨테이너 안에서도 Vulkan 이 정상이다. 이후 `docker compose up` 시 위의 `ERROR_INCOMPATIBLE_DRIVER` / `Failed to create any GPU devices` / `no suitable CUDA GPU was found` / `switching to software` 메시지가 모두 사라진다.
+
+#### Headless 서버에서 외부 PC 로 화면 송출
+
+호스트에 디스플레이가 없는 경우 (서버 환경) Isaac Sim 은 `--headless --livestream=2` (사내망 WebRTC) 로 띄워 외부 PC 에서 Omniverse Streaming Client / 호환 WebRTC 클라이언트로 접속한다. 이때 컨테이너가 바인드하는 포트는 다음과 같다:
+
+| 포트 | 프로토콜 | 용도 | 출처 |
+|------|---------|------|------|
+| 8011 | TCP | HTTP signaling | `omni.services.transport.server.http` |
+| 48010 | TCP | livestream core | `omni.kit.livestream.core` |
+| 49100 | TCP | WebRTC media | `omni.kit.livestream.webrtc` |
+| 47998-48020 | UDP | 동적 미디어 범위 | `omni.services.livestream.nvcf` |
+
+`network_mode: host` 면 별도 포트 매핑 없이 그대로 노출된다. WebRTC 동적 미디어 협상이 NAT 뒤에서 깨지는 경우가 있어 host network 가 가장 안정적이다.
+
 ### 시뮬레이션 기동 시 무시해도 되는 로그
 
 `teleop_se3_agent.py` 가 정상 기동한 상태에서도 수십~수백 줄의 `[Error]` / `[Warning]` 로그가 찍힌다. 대부분 **LeIsaac 제공 scene USD 에셋 자체의 품질 이슈**에서 유래하며, 시뮬레이션·텔레오퍼레이션 기능에는 영향이 없다.

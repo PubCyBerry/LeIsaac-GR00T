@@ -5,24 +5,27 @@ services:
       dockerfile: Dockerfile
     image: leisaac-server:latest
     container_name: leisaac-server
+    runtime: nvidia
+    network_mode: host
+    # ports:
+    #   - "8011:8011/tcp"
+    #   - "48010:48010/tcp"
+    #   - "49100:49100/tcp"
+    #   - 47998-48020:47998-48020/udp"
     ipc: host
     stdin_open: true
     tty: true
     working_dir: /workspace/repo
-    ports:
-      - "5556:5556"
+    environment:
+      LEISAAC_ASSETS_ROOT: /workspace/repo/assets
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: all
     volumes:
       - .:/workspace/repo
+      - /etc/vulkan/icd.d:/etc/vulkan/icd.d:ro
     ulimits:
       memlock: -1
       stack: 67108864
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     command:
       - uv
       - run
@@ -33,3 +36,5 @@ services:
       - --num_envs=1
       - --device=cuda
       - --enable_cameras
+      - --headless
+      - --livestream=2
