@@ -511,7 +511,146 @@ docker compose run --rm gr00t-train bash -lc '
 
 ---
 
-## 9. 검증 (End-to-End Smoke)
+## 9. H100 원격 서버 + Windows PC 실제 로봇 배포
+
+Fine-tuning / open-loop eval 이 H100 에서 완료된 상태에서, **실제 SO101 Follower Arm 이 연결된 Windows PC** 가 H100 의 GR00T 정책 서버에 ZMQ 로 접속해 closed-loop real-robot inference 를 수행하는 방법이다.
+
+### 9.1 아키텍처 개요
+
+```
+┌──────────────────────────┐         TCP :5555          ┌────────────────────────────────┐
+│   H100 서버              │  ◄──── ZMQ REQ-REP ──────►  │   Windows PC                  │
+│   gr00t-train 컨테이너   │                             │   (컨테이너 밖, uv run)         │
+│   GR00T policy server    │                             │   real_robot_gr00t_client.py   │
+│   0.0.0.0:5555 바인딩    │                             │   ├─ OpenCV 카메라 ×2           │
+└──────────────────────────┘                             │   └─ SO101 Follower Arm (COM)  │
+                                                         └────────────────────────────────┘
+```
+
+- **GR00T server** (`run_gr00t_server.py`): 기본값 `host=0.0.0.0`, `port=5555` → 원격 연결 허용
+- **ZMQ 패턴**: REQ-REP (msgpack 직렬화)
+- **좌표계**: SO101 Follower 의 motor normalized range (±100) 를 그대로 사용. sim ↔ radian 변환 불필요.
+
+### 9.2 H100 측: GR00T 정책 서버 기동
+
+H100 서버의 PowerShell 또는 bash:
+
+```bash
+docker compose run --rm --service-ports gr00t-train bash -lc '
+  uv run python /workspace/repo/Isaac-GR00T/gr00t/eval/run_gr00t_server.py \
+    --model-path /workspace/repo/outputs/gr00t_finetune/leisaac_pick_orange/checkpoint-10000 \
+    --embodiment-tag NEW_EMBODIMENT \
+    --device cuda:0 \
+    --host 0.0.0.0 \
+    --port 5555
+'
+```
+
+서버가 준비되면 `Server is ready and listening on tcp://0.0.0.0:5555` 가 출력된다.
+
+서버 IP 확인 (같은 터미널 또는 별도 터미널):
+
+```bash
+ip addr show | grep "inet " | grep -v 127.0.0.1
+# 또는
+hostname -I
+```
+
+### 9.3 네트워크 연결 확인
+
+H100 서버의 방화벽에서 TCP 5555 를 허용해야 한다:
+
+```bash
+# Ubuntu (ufw 사용 시)
+sudo ufw allow 5555/tcp
+
+# 또는 iptables 직접
+sudo iptables -A INPUT -p tcp --dport 5555 -j ACCEPT
+```
+
+Windows PC 에서 연결 테스트:
+
+```powershell
+# PowerShell (nc 없으면 Test-NetConnection 사용)
+Test-NetConnection -ComputerName 192.168.1.100 -Port 5555
+# TcpTestSucceeded : True 가 나오면 OK
+```
+
+### 9.4 Windows PC 측: 의존성 확인
+
+```powershell
+cd D:\Workspaces\robotics_manipulation
+
+# 의존성 동기화 (처음 1회)
+uv sync
+
+# 필수 패키지 확인
+uv run python -c "import zmq, msgpack, lerobot, numpy; print('OK')"
+```
+
+### 9.5 SO101 Follower + 카메라 인덱스 확인
+
+**카메라 인덱스 탐색** (Windows Device Manager → 이미징 장치 에서 번호 확인 또는 스캔):
+
+```powershell
+uv run python -c "
+import cv2
+for i in range(5):
+    cap = cv2.VideoCapture(i)
+    if cap.isOpened():
+        print(f'Camera index {i}: available')
+        cap.release()
+"
+```
+
+**COM 포트 확인**: Windows 장치 관리자 → 포트(COM & LPT) 에서 SO101 연결 포트 확인.
+
+### 9.6 real_robot_gr00t_client.py 실행
+
+```powershell
+uv run python scripts/deployment/real_robot_gr00t_client.py `
+    --policy_host 192.168.1.100 `
+    --policy_port 5555 `
+    --robot_port COM7 `
+    --camera_front_id 0 `
+    --camera_wrist_id 1 `
+    --task_description "Grab orange and place into plate" `
+    --action_horizon 16 `
+    --exec_horizon 8 `
+    --max_relative_target 5.0
+```
+
+주요 파라미터:
+
+| 파라미터 | 기본값 | 설명 |
+|---------|--------|------|
+| `--policy_host` | (필수) | H100 서버 IP |
+| `--robot_port` | `COM7` | SO101 직렬 포트 |
+| `--camera_front_id` | `0` | Front 카메라 OpenCV 인덱스 |
+| `--camera_wrist_id` | `1` | Wrist 카메라 OpenCV 인덱스 |
+| `--exec_horizon` | `8` | 재예측 전 실행할 step 수. 낮을수록 반응 빠름, 서버 부하 증가. |
+| `--max_relative_target` | `5.0` | 한 step 최대 모터 이동량 (motor normalized units). 처음엔 낮게 설정. |
+| `--no_calibrate` | (미설정) | 기존 캘리브레이션 파일 재사용 시 추가 |
+
+터미널 출력 예시:
+```
+  step=    8 | inf=  210ms | loop=  480ms | gripper=  12.3
+  step=   16 | inf=  195ms | loop=  470ms | gripper=  45.7
+```
+
+`inf` 는 H100 추론 레이턴시, `loop` 는 exec_horizon 실행 전체 시간.
+
+### 9.7 안전 주의사항
+
+1. **첫 실행 시 `--max_relative_target 2.0` 으로 낮게 설정** — 모터가 예상 밖의 큰 움직임을 보이면 즉시 Ctrl+C.
+2. **팔 주변 반경 30 cm 이내 접근 금지** — 첫 inference 결과가 올바른지 확인 전까지.
+3. **Ctrl+C** 시 `robot.disconnect()` 가 자동 호출돼 토크가 해제된다. 암이 아래로 떨어질 수 있으니 손으로 받칠 준비.
+4. **캘리브레이션 파일 공유**: 텔레오퍼레이션 시 생성된 `.cache/follower_arm.json` 이 있으면 `--no_calibrate` 로 재사용 가능. 없으면 첫 실행 시 캘리브레이션 진행.
+5. 모델이 학습 배포(PickOrange)와 다른 장면·조명에서는 성공률이 크게 떨어질 수 있다. Open-loop eval (Section 7) 에서 MSE 가 수렴한 checkpoint 를 사용할 것.
+
+---
+
+## 10. 검증 (End-to-End Smoke)
 
 각 단계가 끝났을 때 다음을 한 번씩 확인한다.
 
@@ -528,7 +667,7 @@ docker compose run --rm gr00t-train bash -lc '
 
 ---
 
-## 10. Critical Files (수정·생성 대상)
+## 11. Critical Files (수정·생성 대상)
 
 | 파일 | 상태 | 역할 |
 |------|------|------|
@@ -540,6 +679,7 @@ docker compose run --rm gr00t-train bash -lc '
 | `Isaac-GR00T/examples/leisaac_so101/leisaac_so101_config.py` | **신규 생성 (5.2)** | NEW_EMBODIMENT 모달리티 등록 |
 | `outputs/gr00t_finetune/leisaac_pick_orange/checkpoint-*` | **자동 생성 (6.2)** | 학습 산출물 |
 | `.venv/Lib/site-packages/leisaac/policy/service_policy_clients.py` | **선택 패치 (8.4)** | N1.7 호환 클라이언트 추가 (검증 결과에 따라) |
+| `scripts/deployment/real_robot_gr00t_client.py` | **신규 작성 (9.6)** | 실제 로봇 closed-loop client (Windows PC 실행) |
 
 재사용하는 기존 자산 (수정 불필요):
 - `scripts/environments/teleoperation/teleop_se3_agent.py`, `so101_joint_state_server.py`
@@ -547,10 +687,11 @@ docker compose run --rm gr00t-train bash -lc '
 - `scripts/convert/isaaclab2lerobot.py`
 - `Isaac-GR00T/gr00t/experiment/launch_finetune.py`, `gr00t/eval/open_loop_eval.py`, `gr00t/eval/run_gr00t_server.py`
 - `Isaac-GR00T/examples/SO100/so100_config.py` (5.2 의 템플릿 출처)
+- `Isaac-GR00T/gr00t/policy/server_client.py` (`PolicyClient` — 9.6 스크립트에서 사용)
 
 ---
 
-## 11. Troubleshooting (이미 실측된 함정)
+## 12. Troubleshooting (이미 실측된 함정)
 
 - **`Windows fatal exception: code 0xc0000139` / `_errors DLL load failed`** → `h5py >= 3.16` 이 HDF5 2.0 을 끌어와서 Isaac Sim (HDF5 1.14.6) 과 ABI 충돌. `pyproject.toml` 의 `h5py<3.16` 핀이 풀린 상태가 아닌지 확인.
 - **`vkCreateRayTracingPipelinesKHR failed` / `CUDA error: an illegal memory access`** → H100/A100 등 RT 코어 없는 GPU. 텔레오퍼레이션·sim eval 은 RT 코어 있는 GPU 로 옮긴다 (학습은 그대로 H100/A100 가능).
@@ -559,10 +700,14 @@ docker compose run --rm gr00t-train bash -lc '
 - **livestream 클라이언트 연결 실패** → `network_mode: host` 인지, Windows 방화벽이 8011/48010/49100 을 막지 않는지 확인.
 - **gr00t-train 빌드 시 flash-attn 컴파일 에러** → uv lock 안의 prebuilt wheel 을 쓰고 있는지 확인. 새로 빌드되는 경우 `MAX_JOBS=4` 환경변수로 메모리 OOM 방지.
 - **`Invalid zip file structure / Encountered an unexpected header (actual: 0x73726576)`** → `scripts/deployment/dgpu/wheels/flash_attn-...-linux_aarch64.whl` 이 Git LFS 포인터(텍스트) 상태일 때 `uv run` 이 해당 파일을 zip 으로 파싱하려다 실패하는 것. 볼륨 마운트 후 컨테이너 런타임에서 발생. `docker-compose.yaml` 의 `gr00t-train` 서비스에 `UV_NO_SYNC: "1"` 과 `PYTHONPATH: /workspace/repo/Isaac-GR00T` 를 추가하면 해결된다 (이미 3.2 절에 반영됨).
+- **`Cannot reach GR00T server at <IP>:5555`** (9.6 실행 시) → H100 방화벽 확인 (`sudo ufw status`), `docker compose run --rm gr00t-train` 이 `--service-ports` 옵션 없이 실행됐는지 확인. `network_mode: host` 가 활성화돼 있으면 컨테이너 포트가 자동 노출됨.
+- **real_robot_gr00t_client.py 에서 `ModuleNotFoundError: No module named 'gr00t'`** → `Isaac-GR00T/` 서브디렉토리가 존재하는지 확인 (`Test-Path .\Isaac-GR00T\gr00t\policy\server_client.py`). 스크립트가 실행 시 `sys.path` 에 자동으로 추가하므로 별도 설치는 불필요.
+- **`zmq.error.Again: Resource temporarily unavailable`** (타임아웃) → H100 의 GR00T 추론이 `--policy_timeout_ms` (기본 15000 ms) 안에 완료되지 않음. 모델 로딩 중이거나 batch 처리 지연. `--policy_timeout_ms 30000` 으로 늘리거나 서버 측 로그 확인.
+- **암이 갑자기 크게 움직임** → `--max_relative_target` 값이 너무 크거나 캘리브레이션 불일치. `--max_relative_target 2.0` 으로 낮추고, 캘리브레이션을 다시 진행 (`.cache/follower_arm.json` 삭제 후 재실행).
 
 ---
 
-## 12. Reference
+## 13. Reference
 
 - `D:\Workspaces\robotics_manipulation\README.md` (특히 § Troubleshooting)
 - `https://github.com/NVIDIA/Isaac-GR00T/blob/n1.7-release/getting_started/finetune_new_embodiment.md`
