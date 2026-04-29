@@ -1,0 +1,34 @@
+# syntax=docker/dockerfile:1.7
+FROM nvcr.io/nvidia/pytorch:25.04-py3
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+ENV UV_PROJECT_ENVIRONMENT=/opt/gr00t-venv \
+    UV_LINK_MODE=copy \
+    VIRTUAL_ENV=/opt/gr00t-venv \
+    PATH=/opt/gr00t-venv/bin:$PATH \
+    DEBIAN_FRONTEND=noninteractive \
+    HF_HOME=/workspace/repo/.cache/huggingface \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    OMNI_KIT_ACCEPT_EULA=YES
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ffmpeg git ca-certificates \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+WORKDIR /workspace/repo/Isaac-GR00T
+
+# pyproject + uv.lock 만 먼저 복사해 의존성 레이어 캐시 활용.
+# 본 패키지(gr00t)는 컨테이너 실행 시 호스트 볼륨에서 import 되므로 --no-install-project.
+COPY Isaac-GR00T/pyproject.toml Isaac-GR00T/uv.lock ./
+
+RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
+    uv sync --python 3.10 --frozen --no-install-project \
+    && find /opt/gr00t-venv -type d -name '__pycache__' -prune -exec rm -rf {} + \
+    && find /opt/gr00t-venv -name '*.pyc' -delete
+
+WORKDIR /workspace/repo
+
+CMD ["bash"]
