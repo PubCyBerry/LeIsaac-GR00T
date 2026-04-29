@@ -1,0 +1,79 @@
+# docker-compose.yml — LeIsaac × GR00T 통합 컨테이너
+#
+# 같은 이미지(`leisaac-gr00t-dev`)를 세 가지 역할로 띄운다:
+#   gr00t-server   GR00T 정책 추론 (5555)        — Use case 3, 4
+#   leisaac-sim    IsaacSim + LeIsaac 시뮬레이션 — Use case 1, 3
+#   gr00t-trainer  GR00T 파인튜닝               — Use case 2
+#
+# 자세한 사용법은 docs/leisaac-gr00t-container.md 참고.
+
+x-base: &base
+  image: leisaac-gr00t-dev
+  volumes:
+    - ./scripts:/workspace/scripts
+    - ./datasets:/workspace/datasets
+    - ./outputs:/workspace/outputs
+    - "${USERPROFILE}/.cache/huggingface:/root/.cache/huggingface"
+  environment:
+    HF_HOME: /root/.cache/huggingface
+    NVIDIA_DRIVER_CAPABILITIES: graphics,utility,compute
+    HF_TOKEN: ${HF_TOKEN:-}
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+  ipc: host
+  ulimits:
+    memlock: -1
+    stack: 67108864
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  # === Use case 3 & 4: GR00T 추론 서버 ===
+  gr00t-server:
+    <<: *base
+    container_name: gr00t-server
+    ports:
+      - "5555:5555"
+    command: >
+      /workspace/gr00t/.venv/bin/python
+      /workspace/gr00t/gr00t/eval/run_gr00t_server.py
+        --embodiment-tag ${GR00T_EMBODIMENT_TAG:-NEW_EMBODIMENT}
+        --model-path ${GR00T_MODEL_PATH:-nvidia/GR00T-N1.6-3B}
+        --host 0.0.0.0
+        --port 5555
+    stdin_open: true
+    tty: true
+
+  # === Use case 1: LeIsaac 시뮬레이션 + 원격 텔레오퍼레이션 ===
+  # === Use case 3: LeIsaac 클라이언트 → gr00t-server 추론 ===
+  leisaac-sim:
+    <<: *base
+    container_name: leisaac-sim
+    ports:
+      - "8211:8211"
+      - "8011:8011"
+      - "49100:49100"
+      - "47995-48005:47995-48005/udp"
+    environment:
+      HF_HOME: /root/.cache/huggingface
+      NVIDIA_DRIVER_CAPABILITIES: graphics,utility,compute
+      HF_TOKEN: ${HF_TOKEN:-}
+      LEADER_ENDPOINT: ${LEADER_ENDPOINT:-tcp://host.docker.internal:5556}
+    working_dir: /workspace/leisaac
+    # command 는 scripts/serve_leisaac.ps1 wrapper 가 docker compose run 시점에 전달
+    stdin_open: true
+    tty: true
+
+  # === Use case 2: GR00T 파인튜닝 ===
+  gr00t-trainer:
+    <<: *base
+    container_name: gr00t-trainer
+    working_dir: /workspace/gr00t
+    # command 는 scripts/finetune_gr00t.ps1 wrapper 가 docker compose run 시점에 전달
+    stdin_open: true
+    tty: true

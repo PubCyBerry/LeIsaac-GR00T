@@ -11,6 +11,7 @@ dependencies = [
     "leisaac[isaaclab,lerobot,gr00t]",
     "h5py<3.16",
     "hf-xet>=1.4.3",
+    "pyzmq>=27.1.0",
 ]
 
 [tool.uv.sources]
@@ -18,7 +19,7 @@ torch       = [{ index = "pytorch-cu128" }]
 torchvision = [{ index = "pytorch-cu128" }]
 isaacsim    = [{ index = "nvidia" }]
 leisaac = [
-    { git = "https://github.com/LightwheelAI/leisaac", subdirectory = "source/leisaac", tag = "v0.4.0", marker = "sys_platform == 'win32'" },
+    { git = "https://github.com/LightwheelAI/leisaac", subdirectory = "source/leisaac", tag = "v0.4.0" },
 ]
 
 

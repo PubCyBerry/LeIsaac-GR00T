@@ -1,0 +1,39 @@
+# 빌드 컨텍스트는 repo root 전체이므로 큰 디렉토리는 모두 제외해 컨텍스트 전송을 줄인다.
+# Dockerfile 이 명시적으로 COPY 하는 경로(Isaac-GR00T, pyproject.toml, uv.lock)는 자동 포함된다.
+
+.git
+.gitignore
+.venv
+__pycache__
+*.pyc
+*.pyo
+
+# 학습/데이터 산출물 — bind mount 로 따로 들어옴
+outputs/
+datasets/
+
+# notebooks / 캐시
+notebooks/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Isaac-GR00T 의 docker build 부산물 (build.sh 가 src/ 로 복사한 트리)
+Isaac-GR00T/docker/src/
+
+# 큰 모델/체크포인트
+*.safetensors
+*.bin
+*.ckpt
+*.pt
+*.pth
+
+# 운영체제 / 에디터
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Docker 컨텍스트 자체
+docker/leisaac-gr00t/Dockerfile
