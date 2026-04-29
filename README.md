@@ -508,6 +508,120 @@ docker compose run --rm leisaac-debug bash -c '
 
 `network_mode: host` 면 별도 포트 매핑 없이 그대로 노출된다. WebRTC 동적 미디어 협상이 NAT 뒤에서 깨지는 경우가 있어 host network 가 가장 안정적이다.
 
+### 카메라 sensor 가 raytracing pipeline 생성 실패 (RT 코어 없는 GPU)
+
+**현상**: 위 Vulkan 문제를 해결한 뒤 (`Driver Version: ... | Graphics API: Vulkan` 가 정상 출력되고 `Streaming server started.` 까지 도달) 그 직후, 환경 초기화 단계에서 다음 트레이스로 컨테이너가 즉시 종료된다.
+
+**오류 메시지**:
+
+```
+[Error] [carb.graphics-vulkan.plugin] VkResult: ERROR_INITIALIZATION_FAILED
+[Error] [carb.graphics-vulkan.plugin] vkCreateRayTracingPipelinesKHR failed.
+[Error] [omni.physx.fabric.plugin] CUDA error: an illegal memory access was encountered:
+                                   .../DirectGpuHelper.cpp: 563
+
+Traceback (most recent call last):
+  File ".../teleop_se3_agent.py", line 226, in main
+    env = gym.make(task_name, cfg=env_cfg).unwrapped
+  File ".../isaaclab/envs/mdp/observations.py", line 404, in image
+    images = sensor.data.output[data_type]
+  File ".../isaaclab/sensors/sensor_base.py", line 362, in _update_outdated_buffers
+    self._is_outdated[outdated_env_ids] = False
+RuntimeError: CUDA error: an illegal memory access was encountered
+```
+
+#### 원인
+
+데이터센터 GPU 인 **NVIDIA H100 / A100 (Hopper / Ampere-DC)** 은 **RT 코어를 탑재하지 않는다**. RT 코어는 RTX A/L 워크스테이션 시리즈와 GeForce RTX, 그리고 일부 데이터센터 GPU (L40 / L40S / A40 / RTX 6000 Ada) 에만 있다.
+
+Isaac Sim 5.1 의 카메라 sensor (`isaaclab.sensors.camera.Camera` / `TiledCamera`) 는 무조건 RTX renderer (`RaytracedLighting` / `PathTracing`) 로 동작하도록 강제되어 있다 (`isaaclab/sensors/camera/camera_cfg.py:64`, `isaaclab/apps/isaaclab.python.rendering.kit:50-71` 에 raytracing 비활성화 옵션 부재). 그래서 RT 코어 없는 GPU 에서는 다음 흐름으로 죽는다:
+
+1. `--enable_cameras` 로 카메라 sensor 등록
+2. RTX renderer 가 `vkCreateRayTracingPipelinesKHR` 호출 → `ERROR_INITIALIZATION_FAILED`
+3. `omni.physx.fabric` 가 비어 있는/유효하지 않은 GPU 버퍼를 참조 → CUDA illegal memory access
+4. observation manager 가 `sensor.data.output[...]` 접근 → 이미 corrupt 된 CUDA context 라 `RuntimeError`
+
+CUDA 자체는 정상이고 (`nvidia-smi` 에서 컨테이너의 python 프로세스가 GPU 메모리 점유), GPU 가 두 장 모두 인식되며 livestream 서버까지 정상 기동한 뒤 발생하기 때문에 위쪽 Vulkan 섹션의 증상과는 구분된다.
+
+GPU 별 RT 코어 유무 빠른 가이드:
+
+| GPU | 아키텍처 | RT 코어 | Isaac Sim 카메라 sensor |
+|------|---------|---------|----------------------|
+| H100 / H200 | Hopper | ✗ | 동작 불가 |
+| A100 | Ampere-DC | ✗ | 동작 불가 |
+| L40 / L40S / L4 | Ada-DC | ✓ | 동작 |
+| A40 / A30 | Ampere-DC (visualization) | ✓ | 동작 |
+| RTX A4000 / A5000 / A6000 | Ampere | ✓ | 동작 |
+| RTX 6000 Ada / 5000 Ada | Ada | ✓ | 동작 |
+| GeForce RTX 30/40/50 시리즈 | 컨슈머 | ✓ | 동작 |
+
+#### 해결 방법
+
+세 가지 길이 있다. 환경에 맞춰 선택.
+
+##### A. 카메라 sensor + livestream 비활성화 (이론상 회피, 실제로는 LeIsaac task 에서 불가)
+
+이론적으로는 두 옵션을 모두 끄면 raytracing 경로를 우회할 수 있다:
+
+1. `--enable_cameras` 비활성 → camera sensor raytracing pipeline 실패 회피
+2. `--livestream=2` 비활성 → viewport swapchain compositor 의 RTX shader pipeline `ERROR_DEVICE_LOST` 회피
+
+대표 swapchain crash 메시지 (livestream 만 켜고 카메라는 꺼도 발생 — H100 검증):
+
+```
+[Warning] [gpu.foundation.plugin] Invalid sync scope for buffer resource 'shared swapchain buffer'
+[Error] [carb.graphics-vulkan.plugin] aftermath reports no active shader during GPU crash
+[Error] [carb.graphics-vulkan.plugin] VkResult: ERROR_DEVICE_LOST
+[Error] [carb.graphics-vulkan.plugin] submitToQueueCommon failed.
+[Error] [gpu.foundation.plugin] A GPU crash occurred. Exiting the application...
+```
+
+**그러나 LeIsaac 의 데모 task (`LeIsaac-SO101-PickOrange-v0` 등) 는 환경 config 자체에 카메라 prim 이 등록되어 있어 `--enable_cameras` 를 강제한다**. 빼면 시작 시점에 다음 에러로 즉시 종료:
+
+```
+RuntimeError: A camera was spawned without the --enable_cameras flag.
+              Please use --enable_cameras to enable rendering.
+```
+
+LeIsaac task 의 카메라 prim 을 코드 수준에서 제거하지 않는 한, H100/A100 에서 옵션 A 로는 실행 불가. **실질적으로 H100/A100 환경에서는 LeIsaac 텔레오퍼레이션·데이터 수집을 운영할 수 없다.** Docker 빌드 검증, 의존성/CUDA 동작 확인까지만 가능하며 실제 시뮬레이션은 옵션 C 환경에서 돌려야 한다.
+
+##### B. raster 렌더 모드 강제 시도 (실험적, 비공식)
+
+Isaac Sim 의 `/rtx/rendermode` carb 설정을 raster 계열로 강제. command 에 다음 인자 추가:
+
+```yaml
+command:
+  - ...
+  - --enable_cameras
+  - --/rtx/rendermode=Raster
+  # 또는 --/renderer=pxr
+```
+
+NVIDIA 공식 지원 옵션이 아니며, 카메라 sensor 의 일부 채널 (특히 PathTracing 기반 ground truth) 이 동작하지 않을 수 있다. 동작이 보장되지 않으니 검증 차원으로만.
+
+##### C. RT 코어 있는 GPU 로 이동 (근본 해결)
+
+데이터 수집·학습용 환경은 다음 GPU 중 하나로 옮긴다:
+
+- 로컬 워크스테이션: **RTX A4000 / A5000 / A6000**, **RTX 6000 Ada / 5000 Ada**, GeForce RTX 30/40/50 시리즈
+- 클라우드/데이터센터: **L40S / L40 / L4**, **A40**
+
+H100/A100 두 장이 있는 환경이라도 카메라 sensor 가 필요한 학습/eval 단계에서는 위 GPU 가 한 장 이상 추가로 필요하다.
+
+#### 확인 방법
+
+GPU 의 RT 코어 유무는 `nvidia-smi` 로 직접 확인되지 않는다. 모델명으로 위 표 참조 또는 `vulkaninfo` 출력에서 raytracing 확장 지원 확인:
+
+```bash
+docker compose run --rm leisaac-debug bash -c '
+  apt-get install -y vulkan-tools >/dev/null 2>&1 && \
+  vulkaninfo --summary | grep -A1 "deviceName\|apiVersion" && \
+  vulkaninfo 2>/dev/null | grep -E "VK_KHR_ray_tracing_pipeline|VK_KHR_acceleration_structure" | sort -u
+'
+```
+
+`VK_KHR_ray_tracing_pipeline` 확장이 출력되어도 H100 처럼 RT 코어 없는 GPU 는 hardware 가속을 못 하므로 Isaac Sim 카메라가 내부적으로 실패한다. 결국 GPU 모델로 판단하는 게 가장 빠르다.
+
 ### 시뮬레이션 기동 시 무시해도 되는 로그
 
 `teleop_se3_agent.py` 가 정상 기동한 상태에서도 수십~수백 줄의 `[Error]` / `[Warning]` 로그가 찍힌다. 대부분 **LeIsaac 제공 scene USD 에셋 자체의 품질 이슈**에서 유래하며, 시뮬레이션·텔레오퍼레이션 기능에는 영향이 없다.

@@ -33,8 +33,13 @@ services:
       - --task=LeIsaac-SO101-PickOrange-v0
       - --teleop_device=so101leader
       - --remote_endpoint=tcp://10.10.40.254:5556
+      # - --remote_endpoint=tcp://host.docker.internal:5556 # Window 호스트의 경우
       - --num_envs=1
       - --device=cuda
+      # LeIsaac 태스크 config에 카메라 prim이 포함되어 있어 --enable_cameras 필수.
+      # H100/A100 등 RT 코어 없는 GPU에서는 카메라 sensor가 raytracing pipeline
+      # 생성에 실패하여 task 실행 불가 → RT 코어 있는 GPU 환경에서만 운영.
+      # docker setup 검증 / Windows+A4000 으로 이전 후 실행.
       - --enable_cameras
       - --headless
       - --livestream=2
