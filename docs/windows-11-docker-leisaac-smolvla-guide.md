@@ -373,7 +373,7 @@ SmolVLA 와 GR00T 의 가장 큰 차이는 **비동기 추론(async inference)**
 
 ## 12. Troubleshooting
 
-- **빌드 중 `ResolutionImpossible: packaging==23.2 vs packaging>=24.2`** → `nvcr.io/nvidia/pytorch:25.04-py3` base 이미지가 `packaging==23.2` 를 고정하고 있어 lerobot 0.3.3 의 `packaging>=24.2` 요건과 충돌. `Dockerfile.smolvla` 에서 lerobot clone 전에 `pip install --upgrade "packaging>=24.2"` 를 별도 레이어로 먼저 실행해 해결 (이미 반영됨).
+- **빌드 중 `ResolutionImpossible: packaging==23.2 vs packaging>=24.2`** → base 이미지가 `PIP_CONSTRAINT=/etc/pip/constraint.txt` 로 `packaging==23.2` 를 고정. `--upgrade` 로도 우회 불가. `Dockerfile.smolvla` 에서 `ENV PIP_CONSTRAINT=/dev/null` 로 constraint 파일을 무력화해 해결 (이미 반영됨).
 - **`ModuleNotFoundError: lerobot.async_inference`** → lerobot 이 `v0.3.3` 이전 버전. `pip show lerobot` 로 버전 확인 후 smolvla-server 이미지 재빌드.
 - **PolicyServer 가 시작 직후 바로 종료** → `python -m lerobot.async_inference.policy_server --host=0.0.0.0 --port=8080` 의 포트가 이미 점유 중. `netstat -an | grep 8080` 으로 확인.
 - **클라이언트 핸드셰이크 타임아웃** (`policy_timeout_ms=5000` 초과) → SmolVLA 모델 로드 시간이 5초를 넘는 것. `--policy_timeout_ms=60000` 으로 늘린다 (최초 로드만 느림).

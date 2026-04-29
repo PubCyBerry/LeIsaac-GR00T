@@ -5,16 +5,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
     HF_HOME=/workspace/repo/.cache/huggingface \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
+# base 이미지(nvcr pytorch 25.04)의 PIP_CONSTRAINT=/etc/pip/constraint.txt 가
+# packaging==23.2 를 고정 → lerobot 0.3.3 의 packaging>=24.2 요건과 충돌.
+# /dev/null 로 override 해 constraint 파일 자체를 무력화.
+ENV PIP_CONSTRAINT=/dev/null
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg git ca-certificates \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
-
-# base 이미지(nvcr pytorch 25.04)가 packaging==23.2 를 고정하고 있어
-# lerobot>=0.3.3 의 packaging>=24.2 요건과 충돌. 먼저 업그레이드.
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip install --upgrade "packaging>=24.2"
 
 # lerobot v0.3.3 을 소스로 클론한 뒤 smolvla + async extras 설치.
 # "package[extra] @ git+url" 구문보다 clone + pip install -e 가 더 안정적.
