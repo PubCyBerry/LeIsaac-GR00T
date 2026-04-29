@@ -558,6 +558,7 @@ docker compose run --rm gr00t-train bash -lc '
 - **`AssertionError: dataset file already exists`** → `--dataset_file` 경로의 HDF5 가 이미 있음. 삭제하거나 `--resume` 추가.
 - **livestream 클라이언트 연결 실패** → `network_mode: host` 인지, Windows 방화벽이 8011/48010/49100 을 막지 않는지 확인.
 - **gr00t-train 빌드 시 flash-attn 컴파일 에러** → uv lock 안의 prebuilt wheel 을 쓰고 있는지 확인. 새로 빌드되는 경우 `MAX_JOBS=4` 환경변수로 메모리 OOM 방지.
+- **`Invalid zip file structure / Encountered an unexpected header (actual: 0x73726576)`** → `scripts/deployment/dgpu/wheels/flash_attn-...-linux_aarch64.whl` 이 Git LFS 포인터(텍스트) 상태일 때 `uv run` 이 해당 파일을 zip 으로 파싱하려다 실패하는 것. 볼륨 마운트 후 컨테이너 런타임에서 발생. `docker-compose.yaml` 의 `gr00t-train` 서비스에 `UV_NO_SYNC: "1"` 과 `PYTHONPATH: /workspace/repo/Isaac-GR00T` 를 추가하면 해결된다 (이미 3.2 절에 반영됨).
 
 ---
 
