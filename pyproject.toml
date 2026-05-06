@@ -32,6 +32,11 @@ explicit = true
 name = "nvidia"
 url = "https://pypi.nvidia.com"
 
+[dependency-groups]
+dev = [
+    "ipykernel>=7.2.0",
+]
+
 [tool.uv]
 override-dependencies = [
     "packaging>=24.2,<26.0",
