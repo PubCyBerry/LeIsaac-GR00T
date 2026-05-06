@@ -36,6 +36,7 @@ url = "https://pypi.nvidia.com"
 override-dependencies = [
     "packaging>=24.2,<26.0",
     "numpy==1.26.0",
+    "pyarrow<19",
 ]
 build-constraint-dependencies = [
     "setuptools<82",
