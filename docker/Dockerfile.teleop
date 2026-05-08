@@ -1,0 +1,140 @@
+# syntax=docker/dockerfile:1.7
+# =============================================================================
+# Dockerfile.teleop — LeRobot SO-101 Teleoperation
+# Base  : nvidia/cuda:13.0.0-devel-ubuntu24.04
+# Python: 3.12 (managed by uv)
+# Deps   : pyproject.toml [dependency-groups.teleop] 만 설치
+#
+# ■ 레이어 캐시 설계 (변경 빈도 낮은 순)
+# ─────────────────────────────────────────
+#   Stage base      : apt 시스템 패키지          → 거의 변경 없음
+#   Stage uv        : uv 바이너리                → 거의 변경 없음
+#   Stage python    : Python 3.12 + venv         → 거의 변경 없음
+#   Stage torch     : torch / torchvision        → PyTorch 버전 변경 시만
+#   Stage teleop    : lerobot[feetech] 등        → lerobot 버전 변경 시만
+#   Stage app       : 스크립트 / 설정 파일       → 자주 변경
+#
+# ■ 핵심 전략
+#   - torch 를 별도 스테이지로 분리 → lerobot 버전만 바뀌어도 torch 재다운로드 없음
+#   - uv sync --only-group teleop  → isaac / dev 그룹 의존성 완전 배제
+#   - uv.lock 을 COPY 해 결정론적 설치 보장 (lock 없으면 uv lock 먼저 실행)
+# =============================================================================
+
+# ── Stage 1: System dependencies ─────────────────────────────────────────────
+FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Seoul
+
+# Single RUN to avoid extra layers; clean apt lists in the same step
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # Build essentials
+        build-essential \
+        git \
+        curl \
+        ca-certificates \
+        # Python native-extension deps
+        python3-dev \
+        libffi-dev \
+        libssl-dev \
+        # OpenCV / video
+        ffmpeg \
+        libsm6 \
+        libxext6 \
+        libgl1 \
+        libglib2.0-0 \
+        libavcodec-dev \
+        libavformat-dev \
+        libswscale-dev \
+        # USB / serial (Feetech & Dynamixel)
+        libevdev-dev \
+        libusb-1.0-0 \
+        libusb-1.0-0-dev \
+        udev \
+    # apt 캐시를 같은 레이어에서 삭제해 이미지 크기 최소화
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Stage 2: uv package manager ──────────────────────────────────────────────
+FROM base AS uv-installer
+
+# Install uv to a fixed, predictable location (not user-home cargo)
+RUN curl -LsSf https://astral.sh/uv/install.sh | \
+    UV_INSTALL_DIR=/usr/local/bin sh \
+    && uv --version
+
+# ── Stage 3: Python 3.12 + virtual-env ───────────────────────────────────────
+FROM uv-installer AS python-setup
+
+ENV VIRTUAL_ENV=/opt/venv \
+    # uv 는 managed CPython 만 사용 (시스템 Python 무시)
+    UV_PYTHON_PREFERENCE=only-managed \
+    UV_PYTHON=3.12 \
+    # .pyc 파일을 빌드 시점에 미리 컴파일 → 컨테이너 기동 속도 향상
+    UV_COMPILE_BYTECODE=1 \
+    # copy 모드: hardlink 불가 환경(overlay fs) 대비
+    UV_LINK_MODE=copy
+
+# Pin Python 3.12 (uv downloads the managed CPython build)
+RUN uv python install 3.12 \
+    && uv venv --python 3.12 ${VIRTUAL_ENV}
+
+ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
+
+# ── Stage 4: torch / torchvision (별도 캐시 레이어) ─────────────────────────
+# lerobot 버전이 바뀌어도 이 레이어는 재사용됨.
+# pyproject.toml teleop 그룹의 torch==2.7.0 / cu128 index 를 직접 참조.
+FROM python-setup AS torch-layer
+
+WORKDIR /build
+
+# pyproject.toml 만 먼저 복사 (index 정보 참조용)
+COPY pyproject.toml ./
+
+# torch / torchvision 을 teleop 그룹 버전과 동일하게 선행 설치
+RUN uv pip install --no-cache \
+        "torch==2.10.0" \
+        "torchvision==0.25.0" \
+        --index-url "https://download.pytorch.org/whl/cu128"
+
+
+# ── Stage 5: teleop 그룹 전체 설치 ───────────────────────────────────────────
+# pyproject.toml [dependency-groups.teleop] = torch + torchvision + lerobot[feetech]
+# --active : 현재 활성화된 환경을 사용 
+# --frozen : lockfile 이 없거나 pyproject.toml 과 불일치하면 즉시 빌드 실패
+# --only-group teleop : isaac / dev 그룹 완전 배제
+# --no-install-project: 프로젝트 자체(robotics-manipulation 패키지)는 설치 안 함
+FROM torch-layer AS teleop-deps
+
+# uv.lock 이 있으면 복사 (결정론적 설치).
+# 없어도 빌드는 진행되나, 재현성을 위해 로컬에서 `uv lock` 후 커밋 권장.
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync \
+        --active \
+        --frozen \
+        --only-group teleop \
+        --no-install-project \
+        --no-cache
+
+
+# ── Stage 6: 앱 레이어 (자주 변경되는 파일) ──────────────────────────────────
+FROM teleop-deps AS app
+
+WORKDIR /workspace
+
+# udev 규칙: ttyUSB / ttyACM 에 dialout 그룹 접근 권한 부여
+COPY docker/99-feetech.rules /etc/udev/rules.d/99-feetech.rules
+
+# 실행 진입점 (teleop / record / replay / bash 모드 지원)
+COPY docker/teleop-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# 런타임 환경 변수 고정
+ENV VIRTUAL_ENV=/opt/venv \
+    PATH="/opt/venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=0
+
+# 기본 실행: teleop 모드 (docker-compose CMD 또는 직접 override 가능)
+ENTRYPOINT ["entrypoint.sh"]
+CMD ["teleop"]

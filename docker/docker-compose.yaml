@@ -1,10 +1,157 @@
+name: VLA-pipeline
+
 services:
-  leisaac-debug:
+  # ── Teleoperation service ─────────────────────────────────────────────────
+  # ■ Windows 11 사전 작업 (USB 장치 포워딩)
+  # ─────────────────────────────────────────
+  #   1. usbipd-win 설치 (winget install usbipd)
+  #   2. PowerShell (관리자):
+  #        usbipd list                           # VID:PID 확인
+  #        usbipd bind   --busid <LEADER_BUS>
+  #        usbipd bind   --busid <FOLLOWER_BUS>
+  #        usbipd attach --wsl --busid <LEADER_BUS>
+  #        usbipd attach --wsl --busid <FOLLOWER_BUS>
+  #   3. WSL2 쪽에서 확인: ls /dev/ttyUSB*
+  #   4. .env 파일에 LEADER_PORT / FOLLOWER_PORT 경로 기입
+  #
+  # ■ 실행 - working directory에서:
+  #   docker compose --env-file .env -f docker/docker-compose.yaml up teleop
+  teleop:
     build:
       context: ..
-      dockerfile: docker/Dockerfile
-    image: leisaac-server:latest
-    container_name: leisaac-server
+      dockerfile: docker/Dockerfile.teleop
+      # Buildkit 병렬 레이어 빌드 활성화
+      args:
+        BUILDKT_INLINE_CACHE: "1"
+    image: lerobot-so101-teleop:0.5.1
+    container_name: so101_teleop
+    restart: "no"
+    # ── GPU ────────────────────────────────────────────────────────────────
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # ── 디바이스 마운트 ────────────────────────────────────────────────────
+    #
+    # [Arm 직렬 포트]
+    #   ttyACM* : CH343 칩이 cdc_acm 드라이버로 잡힌 경로
+    #
+    # [카메라]
+    #   UVC 카메라는 캡처 노드(video0/2)와 메타데이터 노드(video1/3) 쌍으로 존재.
+    #   OpenCV 는 캡처 노드만 사용하지만, UVC 드라이버가 메타데이터 노드도
+    #   함께 열려 있어야 정상 스트리밍되는 경우가 있어 둘 다 마운트.
+    #
+    #   belly cam  → /dev/video0 (캡처), /dev/video1 (메타)  — 전면부 시점
+    #   wrist cam  → /dev/video2 (캡처), /dev/video3 (메타)  — 손목 시점
+    #
+    devices:
+      # Arm 직렬 포트
+      - "${LEADER_PORT}:${LEADER_PORT}"                  # /dev/ttyACM0
+      - "${FOLLOWER_PORT}:${FOLLOWER_PORT}"               # /dev/ttyACM1
+      # belly cam (전면부 시점)
+      - "${BELLY_CAM_DEV}:${BELLY_CAM_DEV}"              # /dev/video0
+      - "${BELLY_CAM_META_DEV}:${BELLY_CAM_META_DEV}"    # /dev/video1
+      # wrist cam (손목 시점)
+      - "${WRIST_CAM_DEV}:${WRIST_CAM_DEV}"              # /dev/video2
+      - "${WRIST_CAM_META_DEV}:${WRIST_CAM_META_DEV}"    # /dev/video3
+
+    # udev 접근 & USB 권한에 필요 (개발/테스트 용도)
+    privileged: true
+    # ── 볼륨 ───────────────────────────────────────────────────────────────
+    volumes:
+      # 녹화 데이터 & 로그를 호스트와 공유
+      - ../data:/workspace/data
+      - ../logs:/workspace/logs
+      # HuggingFace Hub 캐시 재사용 (이미지 다운로드 반복 방지)
+      - hf_cache:/root/.cache/huggingface
+    # ── 환경 변수 ──────────────────────────────────────────────────────────
+    environment:
+      # ── 하드웨어: Arm 직렬 포트 ────────────────────────────────────────────
+      LEADER_PORT:                ${LEADER_PORT}
+      FOLLOWER_PORT:              ${FOLLOWER_PORT}
+      # ── 하드웨어: 카메라 디바이스 경로 ─────────────────────────────────────
+      BELLY_CAM_DEV:              ${BELLY_CAM_DEV}
+      WRIST_CAM_DEV:              ${WRIST_CAM_DEV}
+      # OpenCV camera_index (video0→0, video2→2)
+      BELLY_CAM_INDEX:            ${BELLY_CAM_INDEX:-0}
+      WRIST_CAM_INDEX:            ${WRIST_CAM_INDEX:-2}
+      # 카메라 해상도 / FPS (teleop·record 공통)
+      CAM_WIDTH:                  ${CAM_WIDTH:-640}
+      CAM_HEIGHT:                 ${CAM_HEIGHT:-480}
+      CAM_FPS:                    ${CAM_FPS:-25}
+      # ── 기기 타입 (calibrate / setup-motors / find-joint-limits) ───────────
+      ROBOT_TYPE:                 ${ROBOT_TYPE:-so101_follower}
+      TELEOP_TYPE:                ${TELEOP_TYPE:-so101_leader}
+      # calibrate / setup-motors 대상: robot (기본) | teleop
+      CALIBRATE_TARGET:           ${CALIBRATE_TARGET:-robot}
+      # find-joint-limits 탐색 제한 시간(초)
+      TELEOP_TIME_S:              ${TELEOP_TIME_S:-30}
+      # ── record 설정 ─────────────────────────────────────────────────────────
+      # 데이터셋 HF Hub ID: '{hf_username}/{dataset_name}'  (record·replay·viz 공통 필수)
+      HF_DATASET_REPO_ID:         ${HF_DATASET_REPO_ID:-}
+      # 에피소드 작업 설명 (자유 문자열)
+      SINGLE_TASK:                ${SINGLE_TASK:-pick and place}
+      # 수집할 에피소드 수
+      NUM_EPISODES:               ${NUM_EPISODES:-50}
+      # 에피소드 1회 녹화 시간(초)
+      EPISODE_TIME_S:             ${EPISODE_TIME_S:-60}
+      # 에피소드 간 환경 초기화 대기 시간(초)
+      RESET_TIME_S:               ${RESET_TIME_S:-30}
+      # 데이터셋 저장 fps
+      RECORD_FPS:                 ${RECORD_FPS:-30}
+      # HF Hub 업로드 여부
+      PUSH_TO_HUB:                ${PUSH_TO_HUB:-true}
+      # 추가 lerobot-record 인자
+      RECORD_EXTRA_ARGS:          ${RECORD_EXTRA_ARGS:-}
+      # ── replay 설정 ─────────────────────────────────────────────────────────
+      # 재생할 에피소드 인덱스 (0-based)
+      EPISODE_INDEX:              ${EPISODE_INDEX:-0}
+      # 추가 lerobot-replay 인자
+      REPLAY_EXTRA_ARGS:          ${REPLAY_EXTRA_ARGS:-}
+      # ── dataset-viz 설정 ────────────────────────────────────────────────────
+      # 시각화 모드: local | distant (WebSocket 서버)
+      VIZ_MODE:                   ${VIZ_MODE:-local}
+      VIZ_WS_PORT:                ${VIZ_WS_PORT:-9087}
+      # ── 레거시 (teleop 전용) ────────────────────────────────────────────────
+      TELEOP_EXTRA_ARGS:          ${TELEOP_EXTRA_ARGS:-}
+      # ── HuggingFace / NVIDIA ────────────────────────────────────────────────
+      HF_TOKEN:                   ${HF_TOKEN:-}
+      NVIDIA_VISIBLE_DEVICES:     all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # ── 네트워크 ───────────────────────────────────────────────────────────
+    network_mode: host   # 카메라 스트림·ROS 브릿지 등 외부 연결 시 편의
+
+    # ── 기본 명령 오버라이드 ───────────────────────────────────────────────
+    # ENTRYPOINT=entrypoint.sh + CMD=teleop 이 기본값;
+    # 아래 주석을 해제하면 직접 명령 실행 가능
+    command: bash
+    # command: >
+    #   python -m lerobot.scripts.control_robot
+    #   teleoperate
+    #   --robot.leader_arms.main.port=${LEADER_PORT}
+    #   --robot.follower_arms.main.port=${FOLLOWER_PORT}
+
+    # ── 헬스체크 ───────────────────────────────────────────────────────────
+    # teleoperation 자체는 장시간 실행 프로세스이므로 간단한 python import 확인
+    healthcheck:
+      test: ["CMD", "python", "-c", "import lerobot; print('ok')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    ipc: host
+    stdin_open: true
+    tty: true
+
+  leisaac:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.leisaac
+    image: leisaac-teleop:latest
+    container_name: teleop
     runtime: nvidia
     network_mode: host
     # ports:
@@ -13,10 +160,13 @@ services:
     #   - "49100:49100/tcp"
     #   - 47998-48020:47998-48020/udp"
     ipc: host
+    privileged: true
     stdin_open: true
     tty: true
     working_dir: /workspace/repo
     environment:
+      ACCEPT_EULA: "Y"
+      PRIVACY_CONSENT: "Y"
       LEISAAC_ASSETS_ROOT: /workspace/repo/assets
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: all
@@ -36,13 +186,7 @@ services:
       - --remote_endpoint=tcp://host.docker.internal:5556 # Window 호스트의 경우
       - --num_envs=1
       - --device=cuda
-      # LeIsaac 태스크 config에 카메라 prim이 포함되어 있어 --enable_cameras 필수.
-      # H100/A100 등 RT 코어 없는 GPU에서는 카메라 sensor가 raytracing pipeline
-      # 생성에 실패하여 task 실행 불가 → RT 코어 있는 GPU 환경에서만 운영.
-      # docker setup 검증 / Windows+A4000 으로 이전 후 실행.
       - --enable_cameras
-      - --headless
-      - --livestream=2
 
   gr00t-train:
     build:
@@ -101,3 +245,8 @@ services:
       stack: 67108864
     shm_size: "16gb"
     command: ["bash"]            # 학습/추론 시 docker compose run 으로 별도 명령 주입
+
+# ── 공유 볼륨 ──────────────────────────────────────────────────────────────
+volumes:
+  hf_cache:
+    name: lerobot_hf_cache   # 컨테이너 재생성 후에도 HF 캐시 유지

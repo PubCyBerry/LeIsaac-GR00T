@@ -1,48 +1,149 @@
+# =============================================================================
+# pyproject.toml — robotics-manipulation
+#
+# ■ 의존성 그룹 전략
+# ─────────────────────────────────────────────────────────────────────────────
+#   [project].dependencies  : 모든 환경에서 공통으로 필요한 최소 패키지
+#   [dependency-groups]
+#     teleop  : SO-101 실물 Arm Teleoperation (LeRobot + Feetech 서보)
+#     isaac   : Isaac Sim / IsaacLab 시뮬레이션 환경
+#     dev     : 개발 도구 (Jupyter 등)
+#
+# ■ 설치 예시
+#   전체       : uv sync --all-groups
+#   teleop만   : uv sync --only-group teleop
+#   isaac만    : uv sync --only-group isaac
+#   공용+teleop: uv sync --group teleop
+#   공용+dev   : uv sync --group dev
+#
+# ■ Docker 사용
+#   Dockerfile.teleop 에서 --only-group teleop 으로 teleop 의존성만 설치
+# =============================================================================
+
 [project]
-name = "robotics-manipulation"
-version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
-requires-python = ">=3.11,<3.12"
+name        = "robotics-manipulation"
+version     = "0.1.0"
+description = "SO-101 robot manipulation: teleoperation & Isaac Sim training"
+readme      = "README.md"
+
+# Python 3.11 고정 (Isaac Sim 5.1.0 및 LeRobot 0.4.2 공식 지원 버전)
+requires-python = ">=3.11,<3.13"
+
+# ── 공통 의존성 ─────────────────────────────────────────────────────────────
+# 모든 그룹(teleop / isaac)에서 공유되는 최소 패키지만 여기에 선언.
+# 환경별 heavy 패키지(torch, isaacsim 등)는 아래 dependency-groups 에 배치.
 dependencies = [
-    "torch==2.7.0",
-    "torchvision==0.22.0",
-    "isaacsim[all,extscache]==5.1.0",
-    "leisaac[isaaclab,lerobot,gr00t]",
+    # HDF5 파일 I/O (에피소드 녹화 데이터 저장)
     "h5py<3.16",
+    # HuggingFace Hub XET 전송 가속 (대용량 데이터셋 push/pull 최적화)
     "hf-xet>=1.4.3",
+    # ZMQ 소켓 (IsaacLab ↔ LeRobot 프로세스 간 통신)
     "pyzmq>=27.1.0",
 ]
 
-[tool.uv.sources]
-torch       = [{ index = "pytorch-cu128" }]
-torchvision = [{ index = "pytorch-cu128" }]
-isaacsim    = [{ index = "nvidia" }]
-leisaac = [
-    { git = "https://github.com/LightwheelAI/leisaac", subdirectory = "source/leisaac", tag = "v0.4.0" },
+
+# =============================================================================
+# ■ 의존성 그룹
+# =============================================================================
+[dependency-groups]
+
+# ── teleop: 실물 Arm Teleoperation ──────────────────────────────────────────
+# SO-101 Leader/Follower Arm을 직렬 포트로 연결해 원격 조작하는 환경.
+# Feetech STS3215 서보 통신을 위해 lerobot[feetech] extra 사용.
+# Docker 이미지(Dockerfile.teleop)는 이 그룹만 설치: --only-group teleop
+teleop = [
+    # PyTorch — CUDA 12.8 빌드 (pytorch-cu128 index 에서 설치, 아래 sources 참조)
+    "torch>=2.10; python_version >= '3.12'",
+    "torchvision>=0.22; python_version >= '3.12'",
+    # LeRobot 0.4.2 + feetech extra
+    #   feetech extra 포함 내용: feetech-servo-sdk, pyserial, opencv-python,
+    #   huggingface-hub, datasets, draccus, gym, safetensors 등
+    "lerobot[feetech]==0.5.1; python_version>='3.12'",
+    "pyrealsense2>=2.57.7.10387; python_version >= '3.12'",
+    "ffmpeg>=1.4",
+    # evdev: Linux 전용 입력 장치 라이브러리 (gamepad / joystick 텔레op 지원)
+    # Windows에서는 설치 불가 → sys_platform 마커로 lockfile 생성 실패 방지
+    "evdev>=1.7; sys_platform == 'linux'",
 ]
 
+# ── isaac: Isaac Sim / IsaacLab 시뮬레이션 환경 ─────────────────────────────
+# NVIDIA Isaac Sim 5.1.0 기반의 강화학습 및 데이터 수집 환경.
+# leisaac 를 통해 IsaacLab / LeRobot / GR00T 브릿지 제공.
+# 용량이 매우 크므로(~20 GB) 별도 Docker 이미지 또는 로컬 환경에서 사용.
+isaac = [
+    # PyTorch — isaac 환경은 Python 3.11 전용 (Isaac Sim 5.1.0 요구사항)
+    # 마커로 Python 3.12 split에서 teleop의 torch>=2.10과 충돌 방지
+    "torch==2.7.0; python_version < '3.12'",
+    "torchvision==0.22.0; python_version < '3.12'",
+    # Isaac Sim 5.1.0 전체 확장 패키지 (nvidia pypi index 에서 설치)
+    "isaacsim[all,extscache]==5.1.0",
+    # LightwheelAI leisaac: IsaacLab + LeRobot + GR00T 통합 래퍼
+    "leisaac[isaaclab,gr00t]",
+]
 
-[[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
-explicit = true
-
-[[tool.uv.index]]
-name = "nvidia"
-url = "https://pypi.nvidia.com"
-
-[dependency-groups]
+# ── dev: 개발 도구 ───────────────────────────────────────────────────────────
+# Jupyter 노트북, 프로파일링 등 개발 전용 도구.
+# 프로덕션 Docker 이미지에는 포함하지 않음.
 dev = [
     "ipykernel>=7.2.0",
 ]
 
-[tool.uv]
-override-dependencies = [
-    "packaging>=24.2,<26.0",
-    "numpy==1.26.0",
-    "pyarrow<19",
+
+# =============================================================================
+# ■ 패키지 소스 인덱스 (uv 전용)
+# =============================================================================
+
+[tool.uv.sources]
+# torch / torchvision → PyTorch 공식 CUDA 12.8 인덱스에서 설치
+# (teleop 그룹과 isaac 그룹 모두 여기서 해석)
+torch       = [{ index = "pytorch-cu128" }]
+torchvision = [{ index = "pytorch-cu128" }]
+# isaacsim → NVIDIA 전용 PyPI
+isaacsim    = [{ index = "nvidia" }]
+# leisaac → GitHub 소스 (v0.4.0 태그 고정)
+leisaac = [
+    {
+        git          = "https://github.com/LightwheelAI/leisaac",
+        subdirectory = "source/leisaac",
+        tag          = "v0.4.0"
+    },
 ]
+
+[[tool.uv.index]]
+name     = "pytorch-cu128"
+url      = "https://download.pytorch.org/whl/cu128"
+explicit = true   # 이 index는 명시된 패키지(torch/torchvision)에만 적용
+
+[[tool.uv.index]]
+name     = "nvidia"
+url      = "https://pypi.nvidia.com"
+# explicit 미설정 → isaacsim 외 다른 패키지도 fallback으로 탐색 가능
+
+
+# =============================================================================
+# ■ uv 전역 설정
+# =============================================================================
+[tool.uv]
+# teleop(Python 3.12)과 isaac(Python 3.11)은 동시 설치 불가 → 독립 resolve 허용
+# torch 버전이 다르므로(teleop >=2.10, isaac ==2.7.0) conflicts 없이는 lockfile 생성 실패
+conflicts = [
+    [
+        { group = "teleop" },
+        { group = "isaac" },
+    ],
+]
+# 버전 충돌 방지를 위한 전역 오버라이드
+override-dependencies = [
+    # HuggingFace 생태계 호환성 (datasets, transformers 등)
+    "packaging>=24.2,<26.0",
+    # Isaac Sim 5.1.0 공식 지원 numpy 버전
+    "numpy==1.26.0",
+    # pyarrow<19: numpy 1.x C-API 호환 상한 (PyArrow 19+는 numpy 2.x ABI 전용)
+    "pyarrow>=17,<19",
+    # datasets 4.7.0+에서 pa.json_() 사용 (PyArrow 19 이상 필요) → pyarrow<19와 충돌 방지
+    "datasets>=4.0.0,<4.7.0",
+]
+# 빌드 백엔드(setuptools) 버전 고정: setuptools 82+ 에서 발생하는 빌드 오류 회피
 build-constraint-dependencies = [
     "setuptools<82",
 ]

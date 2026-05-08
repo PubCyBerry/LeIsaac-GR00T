@@ -1,0 +1,161 @@
+# =============================================================================
+# .dockerignore — LeRobot SO-101 Teleoperation
+#
+# Docker 빌드 컨텍스트에서 제외할 파일 목록.
+# 빌드 컨텍스트가 작을수록 `docker build` 속도가 빠르고,
+# 불필요한 파일이 이미지 레이어 캐시를 무효화하지 않음.
+#
+# ■ Dockerfile.teleop 이 실제로 COPY 하는 파일 (제외 금지)
+#     pyproject.toml
+#     docker/entrypoint.sh
+#     docker/99-feetech.rules
+# =============================================================================
+
+
+# ── 보안 / 시크릿 ─────────────────────────────────────────────────────────────
+# .env 는 절대 이미지에 포함되면 안 됨 (토큰, 포트 경로 등 민감 정보)
+.env
+.env.*
+!.env.example          # 템플릿은 문서용으로 포함 허용
+
+# 인증서 / 키 파일
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+
+
+# ── 대용량 데이터 / 모델 ──────────────────────────────────────────────────────
+# 녹화 데이터 — docker-compose volumes 로 런타임에 마운트
+data/
+
+# 로그 — 런타임에 생성됨
+logs/
+
+# PyTorch 모델 가중치 (수 GB 단위)
+*.pt
+*.pth
+*.ckpt
+*.bin
+
+# SafeTensors 모델 파일
+*.safetensors
+
+# HuggingFace Hub 로컬 캐시
+.cache/
+.huggingface/
+
+# ROS bag 파일 (로봇 데이터 녹화)
+*.bag
+
+# NumPy / HDF5 데이터
+*.npy
+*.npz
+*.h5
+*.hdf5
+
+# W&B / MLflow 실험 로그
+wandb/
+mlruns/
+
+
+# ── Python 캐시 / 빌드 아티팩트 ──────────────────────────────────────────────
+# 컨테이너 내부에서 재생성됨 → 포함 불필요, 캐시 무효화 위험
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 패키지 빌드 아티팩트
+*.egg-info/
+dist/
+build/
+*.egg
+
+
+# ── 가상환경 / uv 로컬 캐시 ──────────────────────────────────────────────────
+# 로컬 venv 는 이미지 내부 /opt/venv 와 충돌 가능
+.venv/
+venv/
+env/
+
+# uv 로컬 캐시 (이미지 빌드에서는 --no-cache 사용)
+.uv/
+
+
+# ── Git ───────────────────────────────────────────────────────────────────────
+# git 히스토리는 컨테이너 내부에서 불필요
+# (단, lerobot 이 git clone 을 내부에서 수행하는 경우는 해당 없음)
+.git/
+.gitignore
+.gitattributes
+.github/
+
+
+# ── IDE / 에디터 ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.direnv/
+
+
+# ── OS 생성 파일 ──────────────────────────────────────────────────────────────
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+# 노트북은 개발용 — 컨테이너 내부 불필요
+.ipynb_checkpoints/
+*.ipynb
+
+
+# ── Docker 관련 파일 ──────────────────────────────────────────────────────────
+# Compose / Dockerfile 자체는 이미지 내부에 들어갈 필요 없음
+docker-compose*.yaml
+Dockerfile*
+!Dockerfile.teleop      # 빌드 대상 Dockerfile 은 Docker 데몬이 직접 읽으므로
+                        # 사실 컨텍스트 포함 여부와 무관하지만 명시적으로 허용
+
+
+# ── 문서 ──────────────────────────────────────────────────────────────────────
+# README 등은 이미지 동작에 불필요
+README.md
+docs/
+*.rst
+CHANGELOG*
+LICENSE*
+
+
+# ── configs/ ──────────────────────────────────────────────────────────────────
+# docker-compose volumes 로 런타임에 마운트 (./configs:/workspace/configs:ro)
+# → 빌드 컨텍스트에 포함할 필요 없음
+configs/
+
+
+# ── 테스트 ────────────────────────────────────────────────────────────────────
+tests/
+test_*.py
+*_test.py
+
+
+# ── 임시 파일 ─────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
+*.orig
+*.log
