@@ -14,28 +14,119 @@ SO-ARM101 6축 로봇 팔용 **Docker 기반 LeRobot 파이프라인**. `docker/
 
 ## 아키텍처
 
+### 라이프사이클 — 한 번의 모드 호출이 어떻게 흘러가는가
+
+호스트(USB / `.env` / 이미지 빌드) → `lerobot` 컨테이너(entrypoint → CLI) → 호스트 볼륨·외부 Hub 까지의 단면.
+
+```mermaid
+flowchart TB
+    classDef host fill:#e3f2fd,stroke:#1976d2,color:#0d47a1
+    classDef container fill:#fff3e0,stroke:#f57c00,color:#e65100
+    classDef cloud fill:#e8f5e9,stroke:#388e3c,color:#1b5e20
+    classDef hw fill:#fce4ec,stroke:#c2185b,color:#880e4f
+    classDef vol fill:#f3e5f5,stroke:#7b1fa2,color:#4a148c
+
+    subgraph HOST["🖥️ 호스트 (WSL2 또는 Linux)"]
+        direction TB
+        HW["🤖 SO-101 Leader / Follower<br/>📷 belly cam + wrist cam"]:::hw
+        USB["1 USB 연결<br/>usbipd attach &middot; chmod 666 /dev/ttyACM* /dev/video*"]:::host
+        ENV[".env<br/>HF_TOKEN · WANDB_API_KEY<br/>TELEOP_PORT · ROBOT_PORT · CAM_*<br/>모드별 변수"]:::host
+        BUILD["2 docker compose -f docker/docker-compose.yaml build lerobot<br/>← Dockerfile.lerobot (base→uv→py3.11→torch→teleop→app)"]:::host
+        IMG[("lerobot-so101:0.4.4")]:::container
+
+        subgraph VOL["호스트 볼륨"]
+            direction LR
+            DS["./datasets"]:::vol
+            OUT["./outputs"]:::vol
+            LOG["./logs"]:::vol
+            HFC[("lerobot_hf_cache<br/>(named volume)")]:::vol
+        end
+
+        HW -. USB .-> USB
+        BUILD --> IMG
+    end
+
+    subgraph CON["📦 lerobot 컨테이너 — privileged · network_mode:host · GPU×1"]
+        direction TB
+        RUN["3 docker compose run --rm lerobot &lt;mode&gt;"]:::container
+        EP["entrypoint.sh<br/>모드 case 분기 + 기본값 주입"]:::container
+        CLI["lerobot-* CLI<br/>(LeRobot 0.4.4)"]:::container
+        RUN --> EP --> CLI
+    end
+
+    subgraph CLOUD["☁️ 외부 서비스"]
+        direction LR
+        HF[("HuggingFace Hub<br/>데이터셋 &middot; 체크포인트")]:::cloud
+        WB[("Weights &amp; Biases<br/>학습 메트릭")]:::cloud
+    end
+
+    ENV ==>|--env-file| RUN
+    IMG ==> RUN
+    CLI <-->|/dev/ttyACM*<br/>/dev/video*| HW
+    CLI -->|/workspace/datasets| DS
+    CLI -->|/workspace/outputs| OUT
+    CLI -->|/workspace/logs| LOG
+    CLI <-->|/root/.cache/huggingface| HFC
+    DS <-->|push_to_hub / load_dataset| HF
+    OUT -.->|hf upload| HF
+    HFC <-->|cache| HF
+    CLI -.->|WANDB_API_KEY| WB
 ```
-.env  +  docker/docker-compose.yaml
-                  ↓
-       ┌─────────────────────────┐
-       │  lerobot 컨테이너        │
-       │  (lerobot-so101:0.4.4)  │
-       │                          │
-       │  entrypoint.sh <mode>    │
-       └──────────────┬───────────┘
-                      │
-   ┌──────────────────┼────────────────────────────────┐
-   │                  │                                │
- teleop / record   calibrate / setup-motors       train / eval
- replay            find-port / find-cameras       edit-dataset
- dataset-viz       find-joint-limits              info / bash
-                      │
-                      ↓
-   호스트 볼륨 마운트: ./datasets  ./outputs  ./logs
-                      │
-                      ↓
-            HuggingFace Hub (데이터셋·체크포인트)
+
+### 일반 워크플로 — 모드들이 시간 축에서 어떻게 연결되는가
+
+준비 → 보정 → 데이터 수집 → 학습 → 추론. 각 단계에서 어떤 자원이 흐르는지 시퀀스로 표현.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as 사용자
+    participant H as 호스트 셸
+    participant C as lerobot 컨테이너
+    participant A as SO-101 암 + 카메라
+    participant V as 호스트 볼륨<br/>(./datasets, ./outputs)
+    participant HF as HuggingFace Hub
+    participant W as WandB
+
+    Note over U,H: ── 준비 단계 (최초 1회) ──
+    U->>H: usbipd attach + chmod 666
+    U->>H: cp .env.example .env (값 입력)
+    U->>H: docker compose build lerobot
+
+    Note over U,A: ── 보정 (분기마다) ──
+    U->>H: run --rm lerobot calibrate (CALIBRATE_TARGET=teleop)
+    H->>C: entrypoint.sh calibrate
+    C->>A: 리더 암 0점 보정
+    U->>H: run --rm lerobot calibrate (CALIBRATE_TARGET=robot)
+    C->>A: 팔로워 암 0점 보정
+
+    Note over U,HF: ── 데이터 수집 ──
+    U->>H: run --rm lerobot record
+    H->>C: entrypoint.sh record
+    C->>A: 텔레옵 + 카메라 캡처 (NUM_EPISODES 회)
+    A-->>C: joint state + image frames
+    C->>V: HDF5 + mp4 저장 (DATASET_ROOT)
+    C->>HF: --dataset.push_to_hub=true 시 업로드
+
+    Note over U,W: ── 정책 학습 ──
+    U->>H: run --rm lerobot train --dataset.repo_id=... --policy.type=...
+    H->>C: entrypoint.sh train (인자 위임)
+    C->>HF: 데이터셋 다운로드 (캐시 미스 시)
+    C->>V: 체크포인트 / 로그 저장 (OUTPUT_DIR)
+    C->>W: 학습 메트릭 스트림
+    U->>H: hf upload (체크포인트 push)
+
+    Note over U,A: ── 정책 추론 (실기기) ──
+    U->>H: run --rm lerobot record --policy.path=POLICY_REF
+    H->>C: entrypoint.sh record + 정책 로드
+    C->>HF: 정책 다운로드 (캐시 미스 시)
+    loop 매 control step
+        A-->>C: 관측 (joint + image)
+        C->>A: action (정책 추론)
+    end
 ```
+
+### 핵심 포인트
 
 - **단일 컨테이너 / 다중 모드**: `entrypoint.sh` 의 첫 인자가 모드를 결정한다. README 의 모든 명령은 동일한 컨테이너에서 실행되며, 모드별로 필요한 env var 와 디바이스만 다르다.
 - **호스트와의 경계**: 데이터셋·체크포인트·로그는 마운트된 볼륨을 통해 호스트와 공유된다. HuggingFace 캐시는 `lerobot_hf_cache` 명명 볼륨에 보존된다.
