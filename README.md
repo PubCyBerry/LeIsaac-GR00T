@@ -2,6 +2,15 @@
 
 SO-ARM101 6축 로봇 팔에 대한 VLA(Vision-Language-Action) 기반 제어 시스템. Hugging Face **LeRobot** + **LeIsaac** (NVIDIA Isaac Sim) 조합으로 시뮬레이션 학습과 실기기 텔레오퍼레이션을 모두 지원한다.
 
+## 목차
+
+- [아키텍처](#아키텍처)
+- [환경 요구사항](#환경-요구사항)
+- [설치 및 사용방법](#설치-및-사용방법)
+- [Troubleshooting](#Troubleshooting)
+- [Reference](#reference)
+
+
 ## 아키텍처
 
 ### 시뮬레이션 경로 (LeIsaac + Isaac Sim)
