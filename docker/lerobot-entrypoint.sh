@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# entrypoint.sh — LeRobot 0.4.2 SO-101 Container Entry
+# entrypoint.sh — LeRobot 0.4.4 SO-101 Container Entry
 #
 # ■ 실행 모드 (CMD 첫 번째 인자)
 #   teleop          : lerobot-teleoperate  — 실시간 원격 조작
@@ -21,8 +21,8 @@
 #   <기타>           : 명령 그대로 exec
 #
 # ■ 환경 변수 요약 (docker-compose.yaml ↔ .env 에서 주입)
-#   하드웨어 : LEADER_PORT  LEADER_ID  FOLLOWER_PORT  FOLLOWER_ID
-#             BELLY_CAM_DEV  WRIST_CAM_DEV  BELLY_CAM_INDEX  WRIST_CAM_INDEX
+#   하드웨어 : TELEOP_PORT  TELEOP_ID  ROBOT_PORT  ROBOT_ID
+#             BELLY_CAM_PORT  WRIST_CAM_PORT  BELLY_CAM_INDEX  WRIST_CAM_INDEX
 #             CAM_WIDTH  CAM_HEIGHT  CAM_FPS  CAM_WARMUP_S  CAM_FOURCC
 #   record  : HF_DATASET_REPO_ID  SINGLE_TASK  NUM_EPISODES
 #             EPISODE_TIME_S  RESET_TIME_S  RECORD_FPS  PUSH_TO_HUB
@@ -34,12 +34,12 @@
 set -euo pipefail
 
 # ── 하드웨어 환경 변수 기본값 ──────────────────────────────────────────────────
-LEADER_PORT="${LEADER_PORT:-/dev/ttyACM0}"
-LEADER_ID="${LEADER_ID:-konan_teleop}"
-FOLLOWER_PORT="${FOLLOWER_PORT:-/dev/ttyACM1}"
-FOLLOWER_ID="${FOLLOWER_ID:-konan_robot}"
-BELLY_CAM_DEV="${BELLY_CAM_DEV:-/dev/video0}"
-WRIST_CAM_DEV="${WRIST_CAM_DEV:-/dev/video2}"
+TELEOP_PORT="${TELEOP_PORT:-/dev/ttyACM0}"
+TELEOP_ID="${TELEOP_ID:-so101_teleop}"
+ROBOT_PORT="${ROBOT_PORT:-/dev/ttyACM1}"
+ROBOT_ID="${ROBOT_ID:-so101_robot}"
+BELLY_CAM_PORT="${BELLY_CAM_PORT:-/dev/video0}"
+WRIST_CAM_PORT="${WRIST_CAM_PORT:-/dev/video2}"
 BELLY_CAM_INDEX="${BELLY_CAM_INDEX:-0}"
 WRIST_CAM_INDEX="${WRIST_CAM_INDEX:-2}"
 CAM_WIDTH="${CAM_WIDTH:-640}"
@@ -175,7 +175,7 @@ check_lerobot() {
 
 # ── 메인 ──────────────────────────────────────────────────────────────────────
 echo "========================================================"
-echo "  LeRobot 0.5.1 SO-101 Container"
+echo "  LeRobot 0.4.4 SO-101 Container"
 echo "========================================================"
 
 check_gpu
@@ -189,12 +189,12 @@ case "$CMD" in
   # teleop — 실시간 원격 조작
   #
   # [env var → CLI arg 매핑]
-  #   FOLLOWER_PORT  → --robot.port
-  #   FOLLOWER_ID    → --robot.id
-  #   LEADER_PORT    → --teleop.port
-  #   LEADER_ID      → --teleop.id
-  #   WRIST_CAM_DEV  → --robot.cameras wrist index_or_path
-  #   BELLY_CAM_DEV  → --robot.cameras belly index_or_path
+  #   ROBOT_PORT  → --robot.port
+  #   ROBOT_ID    → --robot.id
+  #   TELEOP_PORT    → --teleop.port
+  #   TELEOP_ID      → --teleop.id
+  #   WRIST_CAM_PORT  → --robot.cameras wrist index_or_path
+  #   BELLY_CAM_PORT  → --robot.cameras belly index_or_path
   #   CAM_WIDTH/HEIGHT/FPS → cameras 해상도·FPS
   #
   # [주요 CLI 인자 — TELEOP_EXTRA_ARGS 로 추가 전달 가능]
@@ -211,28 +211,28 @@ case "$CMD" in
   # ────────────────────────────────────────────────────────────────────────────
   teleop)
     info "── 장치 점검 ─────────────────────────────────────"
-    check_port   "$LEADER_PORT"   "Leader Arm"
-    check_port   "$FOLLOWER_PORT" "Follower Arm"
-    check_camera "$BELLY_CAM_DEV" "BELLY"
-    check_camera "$WRIST_CAM_DEV" "WRIST"
+    check_port   "$TELEOP_PORT"   "Leader Arm"
+    check_port   "$ROBOT_PORT" "Follower Arm"
+    check_camera "$BELLY_CAM_PORT" "BELLY"
+    check_camera "$WRIST_CAM_PORT" "WRIST"
 
     info "── Teleoperation 시작 ────────────────────────────"
-    info "  Leader   → ID: ${LEADER_ID}, PORT: ${LEADER_PORT}"
-    info "  Follower → ID: ${FOLLOWER_ID}, PORT: ${FOLLOWER_PORT}"
-    info "  belly cam → ${BELLY_CAM_DEV} (index=${BELLY_CAM_INDEX})"
-    info "  wrist cam → ${WRIST_CAM_DEV} (index=${WRIST_CAM_INDEX})"
+    info "  Leader   → ID: ${TELEOP_ID}, PORT: ${TELEOP_PORT}"
+    info "  Follower → ID: ${ROBOT_ID}, PORT: ${ROBOT_PORT}"
+    info "  belly cam → ${BELLY_CAM_PORT} (index=${BELLY_CAM_INDEX})"
+    info "  wrist cam → ${WRIST_CAM_PORT} (index=${WRIST_CAM_INDEX})"
 
     lerobot-teleoperate \
       --robot.type=so101_follower \
-      --robot.port=${FOLLOWER_PORT} \
+      --robot.port=${ROBOT_PORT} \
       --robot.cameras="{
-          wrist: {type: opencv, index_or_path: ${WRIST_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          belly: {type: opencv, index_or_path: ${BELLY_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
           }" \
-      --robot.id=${FOLLOWER_ID} \
+      --robot.id=${ROBOT_ID} \
       --teleop.type=so101_leader \
-      --teleop.port=${LEADER_PORT} \
-      --teleop.id=${LEADER_ID} \
+      --teleop.port=${TELEOP_PORT} \
+      --teleop.id=${TELEOP_ID} \
       ${TELEOP_EXTRA_ARGS}
     ;;
 
@@ -240,9 +240,9 @@ case "$CMD" in
   # record — 텔레오퍼레이션 기반 데이터 수집
   #
   # [env var → CLI arg 매핑]
-  #   FOLLOWER_PORT/ID        → --robot.port / --robot.id
-  #   LEADER_PORT/ID          → --teleop.port / --teleop.id
-  #   WRIST/BELLY_CAM_DEV     → --robot.cameras (teleop 와 동일)
+  #   ROBOT_PORT/ID        → --robot.port / --robot.id
+  #   TELEOP_PORT/ID          → --teleop.port / --teleop.id
+  #   WRIST/BELLY_CAM_PORT     → --robot.cameras (teleop 와 동일)
   #   CAM_WIDTH/HEIGHT/FPS    → cameras 해상도·FPS
   #   HF_DATASET_REPO_ID      → --dataset.repo_id        (필수)
   #   SINGLE_TASK             → --dataset.single_task
@@ -282,37 +282,37 @@ case "$CMD" in
   # ────────────────────────────────────────────────────────────────────────────
   record)
     info "── 장치 점검 ─────────────────────────────────────"
-    check_port   "$LEADER_PORT"   "Leader Arm"
-    check_port   "$FOLLOWER_PORT" "Follower Arm"
-    check_camera "$BELLY_CAM_DEV" "BELLY"
-    check_camera "$WRIST_CAM_DEV" "WRIST"
+    check_port   "$TELEOP_PORT"   "Leader Arm"
+    check_port   "$ROBOT_PORT" "Follower Arm"
+    check_camera "$BELLY_CAM_PORT" "BELLY"
+    check_camera "$WRIST_CAM_PORT" "WRIST"
     check_dataset_repo_id
 
     info "── Record 시작 ───────────────────────────────────"
-    info "  Leader   → ID: ${LEADER_ID}, PORT: ${LEADER_PORT}"
-    info "  Follower → ID: ${FOLLOWER_ID}, PORT: ${FOLLOWER_PORT}"
+    info "  Leader   → ID: ${TELEOP_ID}, PORT: ${TELEOP_PORT}"
+    info "  Follower → ID: ${ROBOT_ID}, PORT: ${ROBOT_PORT}"
     info "  Dataset  → ${DATASET_REPO_ID} (${NUM_EPISODES} episodes, ${EPISODE_TIME_S}s each)"
     info "  Task     → ${SINGLE_TASK}"
 
     lerobot-record \
       --robot.type=${ROBOT_TYPE} \
-      --robot.port=${FOLLOWER_PORT} \
-      --robot.id=${FOLLOWER_ID} \
+      --robot.port=${ROBOT_PORT} \
+      --robot.id=${ROBOT_ID} \
       --robot.cameras="{
-          wrist: {type: opencv, index_or_path: ${WRIST_CAM_DEV}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}},
+          wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
           }" \
       --teleop.type=${TELEOP_TYPE} \
-      --teleop.port=${LEADER_PORT} \
-      --teleop.id=${LEADER_ID} \
+      --teleop.port=${TELEOP_PORT} \
+      --teleop.id=${TELEOP_ID} \
       --dataset.repo_id=${DATASET_REPO_ID} \
-      --dataset.single_task="${SINGLE_TASK}" \
+      --dataset.single_task=${SINGLE_TASK} \
       --dataset.root=${DATASET_ROOT} \
       --dataset.fps=${RECORD_FPS} \
       --dataset.episode_time_s=${EPISODE_TIME_S} \
       --dataset.reset_time_s=${RESET_TIME_S} \
       --dataset.num_episodes=${NUM_EPISODES} \
       --dataset.push_to_hub=${PUSH_TO_HUB} \
-      --display_data=true \
       ${RECORD_EXTRA_ARGS}
     ;;
 
@@ -320,7 +320,7 @@ case "$CMD" in
   # replay — 녹화된 에피소드를 로봇에서 재실행
   #
   # [env var → CLI arg 매핑]
-  #   FOLLOWER_PORT/ID    → --robot.port / --robot.id
+  #   ROBOT_PORT/ID    → --robot.port / --robot.id
   #   HF_DATASET_REPO_ID  → --dataset.repo_id   (필수)
   #   EPISODE_INDEX       → --dataset.episode
   #   RECORD_FPS          → --dataset.fps
@@ -338,17 +338,17 @@ case "$CMD" in
   # ────────────────────────────────────────────────────────────────────────────
   replay)
     info "── 장치 점검 ─────────────────────────────────────"
-    check_port "$FOLLOWER_PORT" "Follower Arm"
+    check_port "$ROBOT_PORT" "Follower Arm"
     check_dataset_repo_id
 
     info "── Replay 시작 ───────────────────────────────────"
-    info "  Follower → ID: ${FOLLOWER_ID}, PORT: ${FOLLOWER_PORT}"
+    info "  Follower → ID: ${ROBOT_ID}, PORT: ${ROBOT_PORT}"
     info "  Dataset  → ${DATASET_REPO_ID}, episode=${EPISODE_INDEX}"
 
     lerobot-replay \
       --robot.type=${ROBOT_TYPE} \
-      --robot.port=${FOLLOWER_PORT} \
-      --robot.id=${FOLLOWER_ID} \
+      --robot.port=${ROBOT_PORT} \
+      --robot.id=${ROBOT_ID} \
       --dataset.repo_id=${DATASET_REPO_ID} \
       --dataset.episode=${EPISODE_INDEX} \
       --dataset.root=${DATASET_ROOT} \
@@ -378,22 +378,22 @@ case "$CMD" in
   calibrate)
     if [[ "$CALIBRATE_TARGET" == "teleop" ]]; then
         info "── 장치 점검 ─────────────────────────────────────"
-        check_port "$LEADER_PORT" "Leader Arm (teleop)"
+        check_port "$TELEOP_PORT" "Leader Arm (teleop)"
         info "── Calibrate (teleop) 시작 ─────────────────────"
-        info "  Teleop → ID: ${LEADER_ID}, PORT: ${LEADER_PORT}"
+        info "  Teleop → ID: ${TELEOP_ID}, PORT: ${TELEOP_PORT}"
         lerobot-calibrate \
           --teleop.type=${TELEOP_TYPE} \
-          --teleop.port=${LEADER_PORT} \
-          --teleop.id=${LEADER_ID}
+          --teleop.port=${TELEOP_PORT} \
+          --teleop.id=${TELEOP_ID}
     else
         info "── 장치 점검 ─────────────────────────────────────"
-        check_port "$FOLLOWER_PORT" "Follower Arm (robot)"
+        check_port "$ROBOT_PORT" "Follower Arm (robot)"
         info "── Calibrate (robot) 시작 ──────────────────────"
-        info "  Robot → ID: ${FOLLOWER_ID}, PORT: ${FOLLOWER_PORT}"
+        info "  Robot → ID: ${ROBOT_ID}, PORT: ${ROBOT_PORT}"
         lerobot-calibrate \
           --robot.type=${ROBOT_TYPE} \
-          --robot.port=${FOLLOWER_PORT} \
-          --robot.id=${FOLLOWER_ID}
+          --robot.port=${ROBOT_PORT} \
+          --robot.id=${ROBOT_ID}
     fi
     ;;
 
@@ -417,18 +417,18 @@ case "$CMD" in
   setup-motors)
     if [[ "$CALIBRATE_TARGET" == "teleop" ]]; then
         info "── 장치 점검 ─────────────────────────────────────"
-        check_port "$LEADER_PORT" "Leader Arm (teleop)"
+        check_port "$TELEOP_PORT" "Leader Arm (teleop)"
         info "── Setup Motors (teleop) 시작 ──────────────────"
         lerobot-setup-motors \
           --teleop.type=${TELEOP_TYPE} \
-          --teleop.port=${LEADER_PORT}
+          --teleop.port=${TELEOP_PORT}
     else
         info "── 장치 점검 ─────────────────────────────────────"
-        check_port "$FOLLOWER_PORT" "Follower Arm (robot)"
+        check_port "$ROBOT_PORT" "Follower Arm (robot)"
         info "── Setup Motors (robot) 시작 ───────────────────"
         lerobot-setup-motors \
           --robot.type=${ROBOT_TYPE} \
-          --robot.port=${FOLLOWER_PORT}
+          --robot.port=${ROBOT_PORT}
     fi
     ;;
 
@@ -438,8 +438,8 @@ case "$CMD" in
   # robot + teleop 양쪽 모두 필요 (calibrate 와 달리 둘 다 필수)
   #
   # [env var → CLI arg 매핑]
-  #   FOLLOWER_PORT/ID  → --robot.port / --robot.id
-  #   LEADER_PORT/ID    → --teleop.port / --teleop.id
+  #   ROBOT_PORT/ID  → --robot.port / --robot.id
+  #   TELEOP_PORT/ID    → --teleop.port / --teleop.id
   #   TELEOP_TIME_S     → --teleop_time_s
   #
   # [주요 CLI 인자 전체]
@@ -454,21 +454,21 @@ case "$CMD" in
   # ────────────────────────────────────────────────────────────────────────────
   find-joint-limits)
     info "── 장치 점검 ─────────────────────────────────────"
-    check_port "$LEADER_PORT"   "Leader Arm"
-    check_port "$FOLLOWER_PORT" "Follower Arm"
+    check_port "$TELEOP_PORT"   "Leader Arm"
+    check_port "$ROBOT_PORT" "Follower Arm"
 
     info "── Find Joint Limits 시작 ────────────────────────"
-    info "  Leader   → ID: ${LEADER_ID}, PORT: ${LEADER_PORT}"
-    info "  Follower → ID: ${FOLLOWER_ID}, PORT: ${FOLLOWER_PORT}"
+    info "  Leader   → ID: ${TELEOP_ID}, PORT: ${TELEOP_PORT}"
+    info "  Follower → ID: ${ROBOT_ID}, PORT: ${ROBOT_PORT}"
     info "  시간: ${TELEOP_TIME_S}s"
 
     lerobot-find-joint-limits \
       --robot.type=${ROBOT_TYPE} \
-      --robot.port=${FOLLOWER_PORT} \
-      --robot.id=${FOLLOWER_ID} \
+      --robot.port=${ROBOT_PORT} \
+      --robot.id=${ROBOT_ID} \
       --teleop.type=${TELEOP_TYPE} \
-      --teleop.port=${LEADER_PORT} \
-      --teleop.id=${LEADER_ID} \
+      --teleop.port=${TELEOP_PORT} \
+      --teleop.id=${TELEOP_ID} \
       --teleop_time_s=${TELEOP_TIME_S}
     ;;
 

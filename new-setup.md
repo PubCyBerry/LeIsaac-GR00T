@@ -2,13 +2,12 @@
 
 ## 환경 구성
 
-- Ubuntu 24.04
+- CUDA 12.8
 - Python 3.11
+- PyTorch 2.7
 - LeRobot 0.4.4
 - Isaac Sim 5.1.0
 - Isaac Lab 2.3.0
-- PyTorch 2.7
-- CUDA 12.8
 
 ## 환경 설정(WSL2 Ubuntu 24.04 / miniforge)
 
@@ -18,7 +17,7 @@ miniforge 및 기타 의존성 설치
 # miniforge 설치
 sudo add-apt-repository ppa:kisak/kisak-mesa
 sudo apt update
-sudo apt-get install --no-install-recommends cmake build-essential python3-dev pkg-config libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libevdev-dev ffmpeg speech-dispatcher vulkan-tools mesa-vulkan-drivers libxkbcommon-x11-0 -y
+sudo apt-get install --no-install-recommends  libevdev-dev ffmpeg speech-dispatcher espeak-ng vulkan-tools mesa-vulkan-drivers libxkbcommon-x11-0 -y
 wget "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
 bash Miniforge3-$(uname)-$(uname -m).sh
 
@@ -43,7 +42,7 @@ uv 및 기타 의존성 설치
 # uv 설치
 sudo add-apt-repository ppa:kisak/kisak-mesa
 sudo apt update
-sudo apt-get install --no-install-recommends cmake build-essential python3-dev pkg-config libavformat-dev libavcodec-dev libavdevice-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev libevdev-dev ffmpeg speech-dispatcher vulkan-tools mesa-vulkan-drivers libxkbcommon-x11-0 -y
+sudo apt-get install --no-install-recommends  libevdev-dev ffmpeg speech-dispatcher espeak-ng vulkan-tools mesa-vulkan-drivers libxkbcommon-x11-0 -y
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source $HOME/.bashrc
 
@@ -54,7 +53,17 @@ source .venv/bin/activate
 uv sync --group teleop
 ```
 
-### (WSL)SO-101 Arm, 카메라 포트 연결
+## 환경 설정(Docker)
+
+`.env.example` 파일을 `.env` 파일로 복사한 후 포트 정보, API 키 등을 입력한 후 컨테이너를 실행
+
+```bash
+# setup-motors / calibration /teleoperation / record / dataset-viz
+docker compose -f docker/docker-compose.yaml up teleop
+```
+
+
+## (WSL)SO-101 Arm, 카메라 포트 연결
 
 1. `usbipd` 설치
 
@@ -90,6 +99,16 @@ sudo chmod 666 /dev/ttyACM0 /dev/ttyACM1
 sudo chmod 666 /dev/video0 /dev/video2
 sudo usermod -aG dialout $USER
 ```
+
+## Rerun Viewer 사용법
+
+Rerun viewer를 사용해 데이터를 시각화할 수 있음.
+
+1. Host PC에서 `pip install rerun-sdk==0.26.2`로 rerun viewer 설치(컨테이너 내부 rerun 버전과 일치해야 함)
+
+2. `rerun`으로 rerun viewer 실행.
+
+3. `lerobot-teleoperate` 또는 `lerobot-record` 실행하면 자동으로 화면 연동됨.
 
 ## 실기기 Teleoperation
 
@@ -140,5 +159,4 @@ lerobot-record \
     --dataset.push_to_hub=${PUSH_TO_HUB}
     --dataset.fps=${CAM_FPS} \
     --display_data=false \
-
 ```

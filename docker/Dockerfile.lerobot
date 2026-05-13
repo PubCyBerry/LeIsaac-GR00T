@@ -2,7 +2,7 @@
 # =============================================================================
 # Dockerfile.teleop — LeRobot SO-101 Teleoperation
 # Base  : nvidia/cuda:13.0.0-devel-ubuntu24.04
-# Python: 3.12 (managed by uv)
+# Python: 3.11 (managed by uv)
 # Deps   : pyproject.toml [dependency-groups.teleop] 만 설치
 #
 # ■ 레이어 캐시 설계 (변경 빈도 낮은 순)
@@ -16,7 +16,7 @@
 #
 # ■ 핵심 전략
 #   - torch 를 별도 스테이지로 분리 → lerobot 버전만 바뀌어도 torch 재다운로드 없음
-#   - uv sync --only-group teleop  → isaac / dev 그룹 의존성 완전 배제
+#   - uv sync --only-group lerobot  → isaac / dev 그룹 의존성 완전 배제
 #   - uv.lock 을 COPY 해 결정론적 설치 보장 (lock 없으면 uv lock 먼저 실행)
 # =============================================================================
 
@@ -46,12 +46,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libavcodec-dev \
         libavformat-dev \
         libswscale-dev \
-        v4l-utils \
+        libevdev-dev \
+        vulkan-tools \
+        mesa-vulkan-drivers \
+        libxkbcommon-x11-0 \
         # USB / serial (Feetech & Dynamixel)
         libevdev-dev \
         libusb-1.0-0 \
         libusb-1.0-0-dev \
         udev \
+        # LeRobot
+        speech-dispatcher \
+        espeak-ng \
     # apt 캐시를 같은 레이어에서 삭제해 이미지 크기 최소화
     && rm -rf /var/lib/apt/lists/*
 
@@ -69,15 +75,15 @@ FROM uv-installer AS python-setup
 ENV VIRTUAL_ENV=/opt/venv \
     # uv 는 managed CPython 만 사용 (시스템 Python 무시)
     UV_PYTHON_PREFERENCE=only-managed \
-    UV_PYTHON=3.12 \
+    UV_PYTHON=3.11 \
     # .pyc 파일을 빌드 시점에 미리 컴파일 → 컨테이너 기동 속도 향상
     UV_COMPILE_BYTECODE=1 \
     # copy 모드: hardlink 불가 환경(overlay fs) 대비
     UV_LINK_MODE=copy
 
-# Pin Python 3.12 (uv downloads the managed CPython build)
-RUN uv python install 3.12 \
-    && uv venv --python 3.12 ${VIRTUAL_ENV}
+# Pin Python 3.11 (uv downloads the managed CPython build)
+RUN uv python install 3.11 \
+    && uv venv --python 3.11 ${VIRTUAL_ENV}
 
 ENV PATH="${VIRTUAL_ENV}/bin:$PATH"
 
@@ -93,8 +99,8 @@ COPY pyproject.toml ./
 
 # torch / torchvision 을 teleop 그룹 버전과 동일하게 선행 설치
 RUN uv pip install --no-cache \
-        "torch==2.10.0" \
-        "torchvision==0.25.0" \
+        "torch==2.7.0" \
+        "torchvision==0.22.0" \
         --index-url "https://download.pytorch.org/whl/cu128"
 
 
@@ -126,7 +132,7 @@ WORKDIR /workspace
 COPY docker/99-feetech.rules /etc/udev/rules.d/99-feetech.rules
 
 # 실행 진입점 (teleop / record / replay / bash 모드 지원)
-COPY docker/teleop-entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/lerobot-entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # 런타임 환경 변수 고정
@@ -137,4 +143,4 @@ ENV VIRTUAL_ENV=/opt/venv \
 
 # 기본 실행: teleop 모드 (docker-compose CMD 또는 직접 override 가능)
 ENTRYPOINT ["entrypoint.sh"]
-CMD ["teleop"]
+CMD ["bash"]

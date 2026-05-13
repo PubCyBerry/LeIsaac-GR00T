@@ -15,16 +15,16 @@ services:
   #   4. .env 파일에 LEADER_PORT / FOLLOWER_PORT 경로 기입
   #
   # ■ 실행 - working directory에서:
-  #   docker compose --env-file .env -f docker/docker-compose.yaml up teleop
-  teleop:
+  #   docker compose --env-file .env -f docker/docker-compose.yaml up lerobot
+  lerobot:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.teleop
+      dockerfile: docker/Dockerfile.lerobot
       # Buildkit 병렬 레이어 빌드 활성화
       args:
         BUILDKT_INLINE_CACHE: "1"
-    image: lerobot-so101-teleop:0.5.1
-    container_name: so101_teleop
+    image: lerobot-so101:0.4.4
+    container_name: so101_lerobot
     restart: "no"
     # ── GPU ────────────────────────────────────────────────────────────────
     deploy:
@@ -49,79 +49,33 @@ services:
     #
     devices:
       # Arm 직렬 포트
-      - "${LEADER_PORT}:${LEADER_PORT}"                  # /dev/ttyACM0
-      - "${FOLLOWER_PORT}:${FOLLOWER_PORT}"               # /dev/ttyACM1
+      - "${TELEOP_PORT}:${TELEOP_PORT}"                    # /dev/ttyACM0
+      - "${ROBOT_PORT}:${ROBOT_PORT}"                      # /dev/ttyACM1
       # belly cam (전면부 시점)
-      - "${BELLY_CAM_DEV}:${BELLY_CAM_DEV}"              # /dev/video0
-      - "${BELLY_CAM_META_DEV}:${BELLY_CAM_META_DEV}"    # /dev/video1
+      - "${BELLY_CAM_PORT}:${BELLY_CAM_PORT}"              # /dev/video0
+      - "${BELLY_CAM_META_PORT}:${BELLY_CAM_META_PORT}"    # /dev/video1
       # wrist cam (손목 시점)
-      - "${WRIST_CAM_DEV}:${WRIST_CAM_DEV}"              # /dev/video2
-      - "${WRIST_CAM_META_DEV}:${WRIST_CAM_META_DEV}"    # /dev/video3
+      - "${WRIST_CAM_PORT}:${WRIST_CAM_PORT}"              # /dev/video2
+      - "${WRIST_CAM_META_PORT}:${WRIST_CAM_META_PORT}"    # /dev/video3
 
     # udev 접근 & USB 권한에 필요 (개발/테스트 용도)
     privileged: true
     # ── 볼륨 ───────────────────────────────────────────────────────────────
     volumes:
       # 녹화 데이터 & 로그를 호스트와 공유
-      - ../data:/workspace/data
+      - ../datasets:/workspace/datasets
       - ../logs:/workspace/logs
       # HuggingFace Hub 캐시 재사용 (이미지 다운로드 반복 방지)
       # - ~/.cache/huggingface:/root/.cache/huggingface
       - hf_cache:/root/.cache/huggingface
     # ── 환경 변수 ──────────────────────────────────────────────────────────
+    # `.env` 값은 env_file 로만 주입한다. 셸 환경의 동명 변수가 docker compose
+    # 의 ${VAR} 보간을 가로채는 일을 피하기 위해 `environment:` 에는 .env 와
+    # 무관한 compose-전용 키만 둔다. 모든 런타임 기본값은 teleop-entrypoint.sh
+    # 의 `${VAR:-default}` 블록(라인 37-95)에서 채워진다.
+    env_file:
+      - ../.env
     environment:
-      # ── 하드웨어: Arm 직렬 포트 ────────────────────────────────────────────
-      LEADER_PORT:                ${LEADER_PORT}
-      FOLLOWER_PORT:              ${FOLLOWER_PORT}
-      # ── 하드웨어: 카메라 디바이스 경로 ─────────────────────────────────────
-      BELLY_CAM_DEV:              ${BELLY_CAM_DEV}
-      WRIST_CAM_DEV:              ${WRIST_CAM_DEV}
-      # OpenCV camera_index (video0→0, video2→2)
-      BELLY_CAM_INDEX:            ${BELLY_CAM_INDEX:-0}
-      WRIST_CAM_INDEX:            ${WRIST_CAM_INDEX:-2}
-      # 카메라 해상도 / FPS (teleop·record 공통)
-      CAM_WIDTH:                  ${CAM_WIDTH:-640}
-      CAM_HEIGHT:                 ${CAM_HEIGHT:-480}
-      CAM_FPS:                    ${CAM_FPS:-25}
-      CAM_WARMUP_S:               ${CAM_WARMUP_S:-5}
-      CAM_FOURCC:                 ${CAM_FOURCC:-MJPG}
-      # ── 기기 타입 (calibrate / setup-motors / find-joint-limits) ───────────
-      ROBOT_TYPE:                 ${ROBOT_TYPE:-so101_follower}
-      TELEOP_TYPE:                ${TELEOP_TYPE:-so101_leader}
-      # calibrate / setup-motors 대상: robot (기본) | teleop
-      CALIBRATE_TARGET:           ${CALIBRATE_TARGET:-robot}
-      # find-joint-limits 탐색 제한 시간(초)
-      TELEOP_TIME_S:              ${TELEOP_TIME_S:-30}
-      # ── record 설정 ─────────────────────────────────────────────────────────
-      # 데이터셋 HF Hub ID: '{hf_username}/{dataset_name}'  (record·replay·viz 공통 필수)
-      HF_DATASET_REPO_ID:         ${HF_DATASET_REPO_ID:-}
-      # 에피소드 작업 설명 (자유 문자열)
-      SINGLE_TASK:                ${SINGLE_TASK:-pick and place}
-      # 수집할 에피소드 수
-      NUM_EPISODES:               ${NUM_EPISODES:-50}
-      # 에피소드 1회 녹화 시간(초)
-      EPISODE_TIME_S:             ${EPISODE_TIME_S:-60}
-      # 에피소드 간 환경 초기화 대기 시간(초)
-      RESET_TIME_S:               ${RESET_TIME_S:-30}
-      # 데이터셋 저장 fps
-      RECORD_FPS:                 ${RECORD_FPS:-30}
-      # HF Hub 업로드 여부
-      PUSH_TO_HUB:                ${PUSH_TO_HUB:-true}
-      # 추가 lerobot-record 인자
-      RECORD_EXTRA_ARGS:          ${RECORD_EXTRA_ARGS:-}
-      # ── replay 설정 ─────────────────────────────────────────────────────────
-      # 재생할 에피소드 인덱스 (0-based)
-      EPISODE_INDEX:              ${EPISODE_INDEX:-0}
-      # 추가 lerobot-replay 인자
-      REPLAY_EXTRA_ARGS:          ${REPLAY_EXTRA_ARGS:-}
-      # ── dataset-viz 설정 ────────────────────────────────────────────────────
-      # 시각화 모드: local | distant (WebSocket 서버)
-      VIZ_MODE:                   ${VIZ_MODE:-local}
-      VIZ_WS_PORT:                ${VIZ_WS_PORT:-9087}
-      # ── 레거시 (teleop 전용) ────────────────────────────────────────────────
-      TELEOP_EXTRA_ARGS:          ${TELEOP_EXTRA_ARGS:-}
-      # ── HuggingFace / NVIDIA ────────────────────────────────────────────────
-      HF_TOKEN:                   ${HF_TOKEN:-}
       NVIDIA_VISIBLE_DEVICES:     all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     # ── 네트워크 ───────────────────────────────────────────────────────────
@@ -130,12 +84,7 @@ services:
     # ── 기본 명령 오버라이드 ───────────────────────────────────────────────
     # ENTRYPOINT=entrypoint.sh + CMD=teleop 이 기본값;
     # 아래 주석을 해제하면 직접 명령 실행 가능
-    command: bash
-    # command: >
-    #   python -m lerobot.scripts.control_robot
-    #   teleoperate
-    #   --robot.leader_arms.main.port=${LEADER_PORT}
-    #   --robot.follower_arms.main.port=${FOLLOWER_PORT}
+    # command: teleop
 
     # ── 헬스체크 ───────────────────────────────────────────────────────────
     # teleoperation 자체는 장시간 실행 프로세스이므로 간단한 python import 확인
