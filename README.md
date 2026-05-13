@@ -211,11 +211,82 @@ docker compose --env-file .env -f docker/docker-compose.yaml run \
 | RESET_TIME_S | 에피소드당 환경 초기화 대기 시간(초) |
 | RECORD_FPS | 데이터셋 저장 FPS, teleop FPS와 별도 |
 | PUSH_TO_HUB | Hugging Face 데이터 업로드 여부 |
+| DATA_ROOT | 데이터셋 저장 경로 |
 | RECORD_EXTRA_ARGS | 기타 인자 |
+
+녹화 중 다음과 같이 키보드로 조작할 수 있음
+
+| 키 | 기능 |
+|----|-----|
+| → | 에피소드 조기 종료 |
+| ← | 현재 에피소드를 취소하고 다시 녹화 |
+| ESC | 즉시 세션을 종료하고 비디오 인코딩 + 데이터셋 업로드 |
 
 ```bash
 docker compose --env-file .env -f docker/docker-compose.yaml run \
     --rm lerobot record
+```
+
+### Policy 학습
+
+`.env` 파일에서 다음 인자들을 입력하고 docker 명령어 실행
+
+| 이름 | 설명 |
+|-----|------|
+| HF_DATASET_REPO_ID | 학습 데이터셋 HF Hub ID, 기본값은 ${HF_USER}/${SINGLE_TASK} |
+| DATA_ROOT | 데이터셋 로컬 저장 루트 |
+| POLICY_TYPE | Policy 종류(목록은 [여기](https://github.com/huggingface/lerobot/tree/v0.5.1/src/lerobot/policies)에서 확인) |
+| JOB_NAME | 실험 이름(WandB에 표시) |
+| BATCH_SIZE | 배치 크기(기본값은 8) |
+| TRAIN_STEPS | 총 학습 스텝 수(기본값은 100,000)
+| OUTPUT_DIR | 체크포인트, 로그 출력 디렉터리(기본값은 `outputs/train/${JOB_NAME}`) |
+| DEVICE | 가속기 종류(예: `cuda`) |
+| WANDB_ENABLE | wandb 연동 여부 |
+
+
+```bash
+docker compose --env-file .env -f docker/docker-compose.yaml run \
+    --rm lerobot train \
+        --dataset.repo_id=${HF_DATASET_REPO_ID} \
+        --policy.type=${POLICY_TYPE} \
+        --output_dir=${OUTPUT_DIR} \
+        --steps=${TRAIN_STEPS} \
+        --batch_size=${BATCH_SIZE} \
+        --wandb.enable=${WANDB_ENABLE} \
+        ${TRAIN_EXTRA_ARGS}
+```
+
+### Policy 평가 및 추론
+
+`.env` 파일에서 다음 인자들을 입력하고 docker 명령어 실행
+
+| 이름 | 설명 |
+|-----|------|
+| POLICY_PATH | 사전학습 체크포인트 경로/Hub ID |
+
+```bash
+docker compose --env-file .env -f docker/docker-compose.yaml run \
+    --rm lerobot record \
+        --robot.type=so101_follower \
+        --robot.port=${ROBOT_PORT} \
+        --robot.cameras="{
+            wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+            belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+            }" \
+        --robot.id=${ROBOT_ID} \
+        --teleop.type=so101_leader \
+        --teleop.port=${TELEOP_PORT} \
+        --teleop.id=${TELEOP_ID} \
+        --dataset.single_task=${SINGLE_TASK} \
+        --dataset.repo_id=${HF_USER}/${SINGLE_TASK} \
+        --dataset.num_episodes=${NUM_EPISODES} \
+        --dataset.episode_time_s=${EPISODE_TIME_S} \
+        --dataset.reset_time_s=${RESET_TIME_S} \
+        --dataset.push_to_hub=${PUS_TO_HUB} \
+        --dataset.fps=${RECORD_FPS} \
+        --dataset.root=${DATA_ROOT} \
+        ${RECORD_EXTRA_ARGS} \
+        --policy.path=${POLICY_PATH}
 ```
 
 ## Troubleshooting

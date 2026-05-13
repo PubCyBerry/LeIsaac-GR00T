@@ -1,7 +1,7 @@
 name: VLA-pipeline
 
 services:
-  # ── Teleoperation service ─────────────────────────────────────────────────
+  # ── LeRobot container ─────────────────────────────────────────────────
   # ■ Windows 11 사전 작업 (USB 장치 포워딩)
   # ─────────────────────────────────────────
   #   1. usbipd-win 설치 (winget install usbipd)
@@ -65,6 +65,7 @@ services:
       # 녹화 데이터 & 로그를 호스트와 공유
       - ../datasets:/workspace/datasets
       - ../logs:/workspace/logs
+      - ../outputs:/workspace/outputs
       # HuggingFace Hub 캐시 재사용 (이미지 다운로드 반복 방지)
       # - ~/.cache/huggingface:/root/.cache/huggingface
       - hf_cache:/root/.cache/huggingface
