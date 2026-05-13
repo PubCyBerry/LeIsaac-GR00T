@@ -2,7 +2,9 @@
 
 ## 프로젝트 개요
 
-SO-ARM101 6축 로봇 팔에 대한 VLA 학습·배포 파이프라인. LeRobot 호환 모델이라면 어느 것이든 학습·추론 가능. **시뮬레이션 경로**(LeIsaac on Isaac Sim 5.1 → HDF5 기록 → LeRobot 변환)와 **실기기 경로**(`lerobot-record` → 학습 → 팔로워 암 추론) 양쪽을 지원한다.
+SO-ARM101 6축 로봇 팔용 **Docker 기반 LeRobot 파이프라인**. `docker/docker-compose.yaml` 의 `lerobot` 서비스 단일 컨테이너가 `docker/lerobot-entrypoint.sh` 를 통해 텔레오퍼레이션·데이터 수집·정책 학습·추론·시각화 모드를 모두 디스패치한다. LeRobot 호환 모델이라면 어느 것이든 학습·추론 가능.
+
+> 시뮬레이션 경로(LeIsaac on Isaac Sim 5.1)는 임시 비활성 상태(`Dockerfile.leisaac` 만 보존, docker-compose 에 미연결). 현재 활성 워크플로는 실기기(`lerobot-*`) 경로뿐이다.
 
 운영 환경: Windows 워크스테이션과 Linux 원격 서버. 자세한 사양은 §환경 사양 참조.
 
@@ -18,7 +20,18 @@ SO-ARM101 6축 로봇 팔에 대한 VLA 학습·배포 파이프라인. LeRobot 
 | **Storage** | NVMe SSD 512 GB + SATA HDD 1 TB | `/dev/md127` RAID, 28 TB |
 | **GPU** | NVIDIA RTX A4000 16 GB (driver 596.36, CUDA 13.2, compute_cap 8.6 Ampere) | NVIDIA H100 80GB HBM3 ×2 (driver 580.126.20, compute_cap 9.0 Hopper) |
 
-테스트 스위트나 lint config는 현재 정의되어 있지 않다 (`tests/`, `ruff.toml`, `pre-commit-config.yaml` 등 없음). 변경 검증은 실제 시뮬레이터 / 실기기 실행으로 수행한다.
+테스트 스위트나 lint config는 현재 정의되어 있지 않다 (`tests/`, `ruff.toml`, `pre-commit-config.yaml` 등 없음). 변경 검증은 컨테이너 빌드 + 실기기 실행으로 수행한다.
+
+## Docker 컨테이너 구조
+
+- **활성 서비스**: `lerobot` (이미지 `lerobot-so101:0.4.4`, `docker/Dockerfile.lerobot`). `docker compose -f docker/docker-compose.yaml build lerobot` 으로 빌드.
+- **휴면 Dockerfile**: `Dockerfile.leisaac` / `Dockerfile.smolvla` / `Dockerfile.gr00t` — `docker-compose.yaml` 에 연결되어 있지 않으며 필요 시 수동 빌드. 시뮬 경로 복원 시 leisaac 부터 재연결.
+- **빌드 스테이지** (`Dockerfile.lerobot`): base(`nvidia/cuda:13.0.0-devel-ubuntu24.04` + apt) → uv → python 3.11 venv → torch 2.7.0/torchvision 0.22.0 (cu128) → `uv sync --only-group teleop --no-install-project` → app(udev rules + entrypoint).
+- **디바이스 마운트**: `${TELEOP_PORT}` `${ROBOT_PORT}` (직렬 암), `${BELLY_CAM_PORT}` `${BELLY_CAM_META_PORT}` `${WRIST_CAM_PORT}` `${WRIST_CAM_META_PORT}` (UVC 캡처/메타 노드 쌍).
+- **호스트 볼륨**: `./datasets`, `./logs`, `./outputs` → 컨테이너 `/workspace/*`. 명명 볼륨 `lerobot_hf_cache` → `/root/.cache/huggingface` (HF 캐시 재사용).
+- **권한·네트워크**: `privileged: true` (udev/USB 접근), `network_mode: host` (rerun 뷰어·ROS 브릿지), `ipc: host`. GPU 1장 예약 (`deploy.resources.reservations.devices`).
+- **단일 진입점**: `entrypoint.sh` 첫 인자가 모드를 결정 (`teleop` / `record` / `replay` / `calibrate` / `setup-motors` / `find-port` / `find-cameras` / `find-joint-limits` / `dataset-viz` / `train` / `eval` / `edit-dataset` / `info` / `bash` / `python`). 모드별 env var 매핑은 `entrypoint.sh` L37-95 의 `${VAR:-default}` 블록과 각 case 분기 주석에 정리되어 있다.
+- **`.env` 주입 경로**: `docker compose --env-file .env` 가 컨테이너에 환경변수로 주입하고, `entrypoint.sh` 가 기본값을 채워 `lerobot-*` CLI 인자로 매핑.
 
 ## 의존성 호환성 규칙
 
@@ -41,8 +54,8 @@ SO-ARM101 6축 로봇 팔에 대한 VLA 학습·배포 파이프라인. LeRobot 
 
 ## 사용자 환경 컨벤션
 
-- 셸 명령은 PowerShell 표기 (`$env:VAR`, 백틱 line continuation) 기본. Linux 세션에서는 bash 표기 사용
-- HF/W&B 토큰은 `.env`에서 읽음. `.env.example`이 템플릿
+- Windows USB 포워딩은 PowerShell(`usbipd bind/attach`), 컨테이너 내부 실행과 호스트 측 보조 명령은 bash 사용
+- HF/W&B 토큰은 `.env`에서 읽음. `.env.example`이 템플릿. `docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot <mode>` 가 표준 실행 패턴
 - 외부 CLI 호출은 가능한 한 비대화형 모드 (`--yes`, `--quiet`, `--json`)
 
 ## 운영 규칙
