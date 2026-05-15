@@ -29,7 +29,7 @@ SO-ARM101 6축 로봇 팔용 **Docker 기반 LeRobot 파이프라인**. `docker/
   - `lerobot-policy-server` (이미지 `lerobot-policy-server:0.4.4`, `docker/Dockerfile.smolvla`) — async inference gRPC 서버 (`entrypoint.sh policy-server`). `docker compose -f docker/docker-compose.yaml build lerobot-policy-server`. teleop 이미지와 의존성 격리: GR00T 의 flash-attn / 원격 inference(H100 ↔ Windows) 확장 대비.
 - **휴면 Dockerfile**: `Dockerfile.leisaac` / `Dockerfile.gr00t` — `docker-compose.yaml` 에 연결되어 있지 않으며 필요 시 수동 빌드. 시뮬 경로 복원 시 leisaac 부터 재연결.
 - **빌드 스테이지** (`Dockerfile.lerobot` / `Dockerfile.smolvla` 가 Stage 1–4 동일 → BuildKit 캐시 공유): base(`nvidia/cuda:12.8.0-runtime-ubuntu24.04` + apt) → uv → python 3.11 venv → torch 2.7.0/torchvision 0.22.0 (cu128) → `uv sync --group <teleop|smolvla async> --no-install-project` → app(entrypoint, teleop 만 udev rules).
-- **디바이스 마운트**: `${TELEOP_PORT}` `${ROBOT_PORT}` (직렬 암), `${BELLY_CAM_PORT}` `${BELLY_CAM_META_PORT}` `${WRIST_CAM_PORT}` `${WRIST_CAM_META_PORT}` (UVC 캡처/메타 노드 쌍).
+- **디바이스 마운트**: `${TELEOP_PORT}` `${ROBOT_PORT}` (직렬 암), `${BELLY_CAM_PORT}` `${BELLY_CAM_META_PORT}` `${WRIST_CAM_PORT}` `${WRIST_CAM_META_PORT}` `${TOP_CAM_PORT}` `{$TOP_CAM_META_PORT}`(UVC 캡처/메타 노드 쌍).
 - **호스트 볼륨**: `./datasets`, `./logs`, `./outputs` → 컨테이너 `/workspace/*`. 명명 볼륨 `lerobot_hf_cache` → `/root/.cache/huggingface` (두 서비스 공유). 다른 머신으로 옮길 때는 `docker run -v lerobot_hf_cache:/cache alpine tar czf ...` 로 export 후 전송.
 - **권한·네트워크**: `privileged: true` (udev/USB 접근), `network_mode: host` (rerun 뷰어·ROS 브릿지), `ipc: host`. GPU 1장 예약 (`deploy.resources.reservations.devices`).
 - **서비스별 진입점**:
