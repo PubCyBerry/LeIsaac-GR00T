@@ -455,10 +455,8 @@ SUBSYSTEM==\"video4linux\", KERNELS==\"${cam_wrist_kernels}\", ATTR{index}==\"0\
         echo "  BELLY_CAM_DEV=/dev/cam_top"
         if [[ "$top_vidnum" =~ ^[0-9]+$ ]]; then
             echo "  BELLY_CAM_META_DEV=/dev/video$(( top_vidnum + 1 ))   # cam_top → video${top_vidnum}"
-            echo "  BELLY_CAM_INDEX=${top_vidnum}"
         else
             echo "  BELLY_CAM_META_DEV=<장치 재연결 후 확인: ls -l /dev/cam_top>"
-            echo "  BELLY_CAM_INDEX=<장치 재연결 후 확인>"
         fi
     fi
     if [[ -n "$cam_wrist_kernels" ]]; then
@@ -468,10 +466,8 @@ SUBSYSTEM==\"video4linux\", KERNELS==\"${cam_wrist_kernels}\", ATTR{index}==\"0\
         echo "  WRIST_CAM_DEV=/dev/cam_wrist"
         if [[ "$wrist_vidnum" =~ ^[0-9]+$ ]]; then
             echo "  WRIST_CAM_META_DEV=/dev/video$(( wrist_vidnum + 1 ))  # cam_wrist → video${wrist_vidnum}"
-            echo "  WRIST_CAM_INDEX=${wrist_vidnum}"
         else
             echo "  WRIST_CAM_META_DEV=<장치 재연결 후 확인: ls -l /dev/cam_wrist>"
-            echo "  WRIST_CAM_INDEX=<장치 재연결 후 확인>"
         fi
     fi
 

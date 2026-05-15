@@ -28,7 +28,7 @@ flowchart LR
     classDef policyNode fill:#ffcdd2,stroke:#c62828,color:#b71c1c
 
     LEAD["🦾 SO-101 리더 암"]:::hw
-    CAM["📷 카메라 ×3<br/>640×480@25fps MJPG<br/>~45 MB/s"]:::hw
+    CAM["📷 카메라 1~3대<br/>640×480@25fps MJPG<br/>~15 MB/s/cam"]:::hw
 
     subgraph CON["📦 lerobot 컨테이너"]
         direction TB
@@ -90,7 +90,7 @@ flowchart LR
 | SO-101 Leader Arm | 1 | Feetech STS3215 서보 |
 | SO-101 Follower Arm | 1 | Feetech STS3215 서보 |
 | USB-Serial 어댑터 | 2 | CH343 칩 (COM 포트) |
-| 카메라 | 3 | belly cam (전면), wrist cam (손목), top cam (탑뷰) |
+| 카메라 | 1~3 | belly cam (전면), wrist cam (손목), top cam (탑뷰). `ENABLED_CAMERAS` 로 부분집합 선택 |
 
 ### 핵심 의존성
 
@@ -262,9 +262,10 @@ docker compose --env-file .env -f docker/docker-compose.yaml run \
 
 | 이름 | 설명 |
 |-----|------|
+| ENABLED_CAMERAS | 활성 카메라 부분집합(콤마 구분). 기본 `wrist,belly`. 3개 운영 시 `wrist,belly,top` |
 | BELLY_CAM_PORT | 전면부 카메라 포트(예: `/dev/video0`) |
 | WRIST_CAM_PORT | 그리퍼 카메라 포트(예: `/dev/video2`) |
-| TOP_CAM_PORT | 탑뷰 카메라 포트(예: `/dev/video4`) |
+| TOP_CAM_PORT | 탑뷰 카메라 포트(예: `/dev/video4`). `ENABLED_CAMERAS` 에 `top` 포함 시 사용 |
 | CAM_WIDTH | 카메라 가로 픽셀 |
 | CAM_HEIGHT | 카메라 세로 픽셀 |
 | CAM_FPS | 카메라 FPS |
@@ -412,7 +413,6 @@ docker compose --env-file .env -f docker/docker-compose.yaml run \
         --robot.cameras="{
             wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
             belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-            top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
             }" \
         --robot.id=${ROBOT_ID} \
         --teleop.type=so101_leader \
@@ -594,7 +594,6 @@ docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot \
         --robot.cameras="{
             wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
             belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-            top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
             }" \
         --task='pick the pen' \
         --actions_per_chunk=50 \

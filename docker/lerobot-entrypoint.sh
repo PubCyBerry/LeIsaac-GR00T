@@ -27,7 +27,7 @@
 #
 # ■ 환경 변수 요약 (docker-compose.yaml ↔ .env 에서 주입)
 #   하드웨어 : TELEOP_PORT  TELEOP_ID  ROBOT_PORT  ROBOT_ID
-#             BELLY_CAM_PORT  WRIST_CAM_PORT  BELLY_CAM_INDEX  WRIST_CAM_INDEX
+#             ENABLED_CAMERAS  BELLY_CAM_PORT  WRIST_CAM_PORT  TOP_CAM_PORT
 #             CAM_WIDTH  CAM_HEIGHT  CAM_FPS  CAM_WARMUP_S  CAM_FOURCC
 #   record  : HF_DATASET_REPO_ID  SINGLE_TASK  NUM_EPISODES
 #             EPISODE_TIME_S  RESET_TIME_S  RECORD_FPS  PUSH_TO_HUB
@@ -47,12 +47,11 @@ TELEOP_PORT="${TELEOP_PORT:-/dev/ttyACM0}"
 TELEOP_ID="${TELEOP_ID:-so101_teleop}"
 ROBOT_PORT="${ROBOT_PORT:-/dev/ttyACM1}"
 ROBOT_ID="${ROBOT_ID:-so101_robot}"
+# 활성 카메라 부분집합 (콤마 구분, 순서 보존). 예: "wrist,belly" / "wrist,belly,top" / "wrist"
+ENABLED_CAMERAS="${ENABLED_CAMERAS:-wrist,belly}"
 BELLY_CAM_PORT="${BELLY_CAM_PORT:-/dev/video0}"
 WRIST_CAM_PORT="${WRIST_CAM_PORT:-/dev/video2}"
 TOP_CAM_PORT="${TOP_CAM_PORT:-/dev/video4}"
-BELLY_CAM_INDEX="${BELLY_CAM_INDEX:-0}"
-WRIST_CAM_INDEX="${WRIST_CAM_INDEX:-2}"
-TOP_CAM_INDEX="${TOP_CAM_INDEX:-4}"
 CAM_WIDTH="${CAM_WIDTH:-640}"
 CAM_HEIGHT="${CAM_HEIGHT:-480}"
 CAM_FPS="${CAM_FPS:-25}"
@@ -177,6 +176,60 @@ check_camera() {
     fi
 }
 
+# ── 카메라 JSON 빌더 ─────────────────────────────────────────────────────────
+# ENABLED_CAMERAS 를 순회하며 lerobot --robot.cameras 인라인 dict 를 생성.
+# 각 이름은 ${UPPER}_CAM_PORT 환경변수로 매핑된다 (예: wrist → WRIST_CAM_PORT).
+build_cameras_json() {
+    local out="" cam upper port_var port first=1
+    local -a cams
+    IFS=',' read -ra cams <<< "$ENABLED_CAMERAS"
+    for cam in "${cams[@]}"; do
+        cam="${cam// /}"; [[ -z "$cam" ]] && continue
+        upper="${cam^^}"; port_var="${upper}_CAM_PORT"; port="${!port_var:-}"
+        if [[ -z "$port" ]]; then
+            error "ENABLED_CAMERAS 에 '${cam}' 가 있지만 ${port_var} 가 비어 있습니다."
+            exit 1
+        fi
+        if (( first )); then
+            out="{"
+        else
+            out+=", "
+        fi
+        first=0
+        out+="${cam}: {type: opencv, index_or_path: ${port}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}}"
+    done
+    if (( first )); then
+        error "ENABLED_CAMERAS 가 비어 있습니다. 최소 1개 이상의 카메라를 지정하세요."
+        exit 1
+    fi
+    out+="}"
+    echo "$out"
+}
+
+# ── 활성 카메라 점검 (warn-only) ─────────────────────────────────────────────
+check_enabled_cameras() {
+    local cam upper port_var
+    local -a cams
+    IFS=',' read -ra cams <<< "$ENABLED_CAMERAS"
+    for cam in "${cams[@]}"; do
+        cam="${cam// /}"; [[ -z "$cam" ]] && continue
+        upper="${cam^^}"; port_var="${upper}_CAM_PORT"
+        check_camera "${!port_var:-}" "${upper}"
+    done
+}
+
+# ── 활성 카메라 로그 ─────────────────────────────────────────────────────────
+log_enabled_cameras() {
+    local cam upper port_var
+    local -a cams
+    IFS=',' read -ra cams <<< "$ENABLED_CAMERAS"
+    for cam in "${cams[@]}"; do
+        cam="${cam// /}"; [[ -z "$cam" ]] && continue
+        upper="${cam^^}"; port_var="${upper}_CAM_PORT"
+        info "  ${cam} cam → ${!port_var:-<unset>}"
+    done
+}
+
 # ── HF_DATASET_REPO_ID 존재 확인 ──────────────────────────────────────────────
 check_dataset_repo_id() {
     if [[ -z "$DATASET_REPO_ID" ]]; then
@@ -253,23 +306,18 @@ case "$CMD" in
     info "── 장치 점검 ─────────────────────────────────────"
     check_port   "$TELEOP_PORT"   "Leader Arm"
     check_port   "$ROBOT_PORT" "Follower Arm"
-    check_camera "$BELLY_CAM_PORT" "BELLY"
-    check_camera "$WRIST_CAM_PORT" "WRIST"
+    check_enabled_cameras
 
     info "── Teleoperation 시작 ────────────────────────────"
     info "  Leader   → ID: ${TELEOP_ID}, PORT: ${TELEOP_PORT}"
     info "  Follower → ID: ${ROBOT_ID}, PORT: ${ROBOT_PORT}"
-    info "  belly cam → ${BELLY_CAM_PORT} (index=${BELLY_CAM_INDEX})"
-    info "  wrist cam → ${WRIST_CAM_PORT} (index=${WRIST_CAM_INDEX})"
+    info "  Cameras  → ${ENABLED_CAMERAS}"
+    log_enabled_cameras
 
     lerobot-teleoperate \
       --robot.type=so101_follower \
       --robot.port=${ROBOT_PORT} \
-      --robot.cameras="{
-          wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          }" \
+      --robot.cameras="$(build_cameras_json)" \
       --robot.id=${ROBOT_ID} \
       --teleop.type=so101_leader \
       --teleop.port=${TELEOP_PORT} \
@@ -325,13 +373,13 @@ case "$CMD" in
     info "── 장치 점검 ─────────────────────────────────────"
     check_port   "$TELEOP_PORT"   "Leader Arm"
     check_port   "$ROBOT_PORT" "Follower Arm"
-    check_camera "$BELLY_CAM_PORT" "BELLY"
-    check_camera "$WRIST_CAM_PORT" "WRIST"
+    check_enabled_cameras
     check_dataset_repo_id
 
     info "── Record 시작 ───────────────────────────────────"
     info "  Leader   → ID: ${TELEOP_ID}, PORT: ${TELEOP_PORT}"
     info "  Follower → ID: ${ROBOT_ID}, PORT: ${ROBOT_PORT}"
+    info "  Cameras  → ${ENABLED_CAMERAS}"
     info "  Dataset  → ${DATASET_REPO_ID} (${NUM_EPISODES} episodes, ${EPISODE_TIME_S}s each)"
     info "  Task     → ${SINGLE_TASK}"
 
@@ -339,11 +387,7 @@ case "$CMD" in
       --robot.type=${ROBOT_TYPE} \
       --robot.port=${ROBOT_PORT} \
       --robot.id=${ROBOT_ID} \
-      --robot.cameras="{
-          wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          }" \
+      --robot.cameras="$(build_cameras_json)" \
       --teleop.type=${TELEOP_TYPE} \
       --teleop.port=${TELEOP_PORT} \
       --teleop.id=${TELEOP_ID} \
@@ -631,14 +675,14 @@ case "$CMD" in
   policy-client)
     info "── 장치 점검 ─────────────────────────────────────"
     check_port   "$ROBOT_PORT" "Follower Arm"
-    check_camera "$BELLY_CAM_PORT" "BELLY"
-    check_camera "$WRIST_CAM_PORT" "WRIST"
+    check_enabled_cameras
 
     info "── Policy Client 시작 (gRPC) ─────────────────────"
     info "  Server  → ${POLICY_SERVER_ADDRESS}"
     info "  Policy  → ${POLICY_TYPE} @ ${POLICY_PATH} (device=${POLICY_DEVICE})"
     info "  Robot   → ${ROBOT_TYPE} ID=${ROBOT_ID} PORT=${ROBOT_PORT}"
     info "  Task    → ${TASK}"
+    info "  Cameras → ${ENABLED_CAMERAS}"
     info "  Chunks  → ${ACTIONS_PER_CHUNK} actions, threshold=${CHUNK_SIZE_THRESHOLD}, fps=${POLICY_CLIENT_FPS}"
 
     shift || true
@@ -659,11 +703,7 @@ case "$CMD" in
       --robot.type=${ROBOT_TYPE} \
       --robot.port=${ROBOT_PORT} \
       --robot.id=${ROBOT_ID} \
-      --robot.cameras="{
-          wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          }" \
+      --robot.cameras="$(build_cameras_json)" \
       ${POLICY_CLIENT_EXTRA_ARGS} \
       "$@"
     ;;
