@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # =============================================================================
-# entrypoint.sh — LeRobot 0.4.4 SO-101 Container Entry
+# lerobot-entrypoint.sh — `lerobot` 서비스 (Dockerfile.lerobot) 진입점
+#
+# 본 스크립트는 로봇 직결 워크플로(teleop / record / replay / calibrate /
+# find-* / dataset-viz / policy-client / edit-dataset) 만 다룬다.
+# 정책 학습/평가(`train`, `eval`)와 정책 서버(`prepare-model`, `policy-server`)는
+# `docker/server-entrypoint.sh` (Dockerfile.smolvla 가 사용) 에 분리되어 있다 —
+# 이 이미지에는 smolvla deps (transformers/accelerate 등) 가 설치되지 않기 때문.
 #
 # ■ 실행 모드 (CMD 첫 번째 인자)
 #   teleop          : lerobot-teleoperate  — 실시간 원격 조작
@@ -12,8 +18,7 @@
 #   find-cameras    : lerobot-find-cameras — 연결된 카메라 검색 및 캡처 확인
 #   find-port       : lerobot-find-port    — MotorsBus USB 포트 자동 감지
 #   dataset-viz     : lerobot-dataset-viz  — 데이터셋 시각화 (Rerun)
-#   train           : lerobot-train        — Policy 학습 (인자 완전 위임)
-#   eval            : lerobot-eval         — Policy 평가 (인자 완전 위임)
+#   policy-client   : lerobot.async_inference.robot_client — 정책 서버에 붙어 팔로워 구동
 #   edit-dataset    : lerobot-edit-dataset — 데이터셋 편집 (인자 완전 위임)
 #   info            : lerobot-info         — LeRobot/시스템 정보 출력
 #   bash | shell    : 인터랙티브 Bash 쉘
@@ -30,6 +35,10 @@
 #   replay  : HF_DATASET_REPO_ID  EPISODE_INDEX  REPLAY_EXTRA_ARGS
 #   기기유틸: ROBOT_TYPE  TELEOP_TYPE  CALIBRATE_TARGET  TELEOP_TIME_S
 #   viz     : HF_DATASET_REPO_ID  EPISODE_INDEX  VIZ_MODE  VIZ_WS_PORT
+#   policy-client: POLICY_SERVER_ADDRESS  POLICY_TYPE  POLICY_PATH
+#                  POLICY_DEVICE  CLIENT_DEVICE  TASK  ACTIONS_PER_CHUNK
+#                  CHUNK_SIZE_THRESHOLD  AGGREGATE_FN_NAME  POLICY_CLIENT_FPS
+#                  POLICY_CLIENT_EXTRA_ARGS
 # =============================================================================
 set -euo pipefail
 
@@ -90,6 +99,34 @@ TELEOP_TIME_S="${TELEOP_TIME_S:-30}"
 VIZ_MODE="${VIZ_MODE:-local}"
 # distant 모드 WebSocket 포트
 VIZ_WS_PORT="${VIZ_WS_PORT:-9087}"
+
+# ── policy-client 환경 변수 (async inference 클라이언트) ────────────────────
+# 정책 서버 (`lerobot-policy-server` 서비스 또는 원격 H100 서버) 에 gRPC 로 붙어
+# 관측을 보내고 액션을 받아 SO-101 follower arm 을 구동한다.
+# 같은 호스트에 정책 서버가 떠 있으면 127.0.0.1:8080, 원격 inference 라면
+# H100 서버 IP:포트 (예: "10.0.0.5:8080") 를 지정.
+POLICY_SERVER_ADDRESS="${POLICY_SERVER_ADDRESS:-127.0.0.1:8080}"
+# 정책 종류 (smolvla / pi0 / act / ...) — 서버가 클라이언트의 SendPolicyInstructions
+# 를 받아 해당 정책을 로드한다.
+POLICY_TYPE="${POLICY_TYPE:-smolvla}"
+# 정책 weight: HF Hub repo ID 또는 로컬 경로. 기본은 SmolVLA 베이스.
+POLICY_PATH="${POLICY_PATH:-lerobot/smolvla_base}"
+# 정책이 실행될 디바이스 (서버 측). cuda / cpu / mps
+POLICY_DEVICE="${POLICY_DEVICE:-cuda}"
+# 클라이언트 측 후처리 디바이스 (보통 cpu)
+CLIENT_DEVICE="${CLIENT_DEVICE:-cpu}"
+# 자연어 task instruction (정책에 전달; 예: "pick the pen", "fold the t-shirt")
+TASK="${TASK:-pick the pen}"
+# 한 번에 받아오는 액션 청크 길이 (SmolVLA 기본 50)
+ACTIONS_PER_CHUNK="${ACTIONS_PER_CHUNK:-50}"
+# 청크 갱신 임계값 (0~1). 큐가 이 비율 미만으로 줄면 새 청크 요청.
+CHUNK_SIZE_THRESHOLD="${CHUNK_SIZE_THRESHOLD:-0.5}"
+# 청크 경계 부드럽게 합치는 함수 (weighted_average / latest / average ...)
+AGGREGATE_FN_NAME="${AGGREGATE_FN_NAME:-weighted_average}"
+# 컨트롤 루프 FPS (RECORD_FPS / 서버 POLICY_FPS 와 독립)
+POLICY_CLIENT_FPS="${POLICY_CLIENT_FPS:-30}"
+# 추가 robot_client 인자 (예: --debug_visualize_queue_size=true)
+POLICY_CLIENT_EXTRA_ARGS="${POLICY_CLIENT_EXTRA_ARGS:-}"
 
 # ── 레거시 (teleop 전용, 하위 호환) ────────────────────────────────────────
 TELEOP_EXTRA_ARGS="${TELEOP_EXTRA_ARGS:-}"
@@ -306,7 +343,7 @@ case "$CMD" in
       --teleop.port=${TELEOP_PORT} \
       --teleop.id=${TELEOP_ID} \
       --dataset.repo_id=${DATASET_REPO_ID} \
-      --dataset.single_task=${SINGLE_TASK} \
+      --dataset.single_task="${SINGLE_TASK}" \
       --dataset.root=${DATASET_ROOT} \
       --dataset.fps=${RECORD_FPS} \
       --dataset.episode_time_s=${EPISODE_TIME_S} \
@@ -554,79 +591,89 @@ case "$CMD" in
     ;;
 
   # ────────────────────────────────────────────────────────────────────────────
-  # train — Policy 학습 (모든 인자를 lerobot-train 에 완전 위임)
+  # policy-client — Async inference 클라이언트 (실제 SO-101 follower 구동)
   #
-  # 하드웨어 없음; GPU 권장
+  # `lerobot.async_inference.robot_client` 를 띄워 정책 서버
+  # (`lerobot-policy-server` 또는 원격 H100) 의 gRPC :PORT 에 접속한다.
+  # 클라이언트가 SendPolicyInstructions RPC 로 policy_type / pretrained_name_or_path
+  # / policy_device 를 전달 → 서버가 해당 정책을 로드 → 클라이언트가 카메라/state
+  # 관측을 송신 → 서버가 액션 청크를 비동기 반환 → 클라이언트가 follower 에 적용.
   #
-  # [주요 CLI 인자 전체]
-  #   --dataset.repo_id=<str>         : 학습 데이터셋 HF Hub ID (필수)
-  #   --dataset.local_files_only=true : 오프라인 모드
-  #   --dataset.root=<path>           : 로컬 저장 루트
-  #   --policy.type=<str>             : 모델 타입 (act, diffusion, smolvla, ...)
-  #   --policy.path=<str>             : 사전학습 체크포인트 경로/Hub ID
-  #   --output_dir=<path>             : 체크포인트·로그 출력 디렉터리
-  #   --job_name=<str>                : 실행 이름 (WandB 표시)
-  #   --resume=true|false             : 기존 output_dir 에서 재개 (기본 false)
-  #   --seed=<int>                    : 난수 시드 (기본 1000)
-  #   --batch_size=<int>              : 배치 크기 (기본 8)
-  #   --steps=<int>                   : 총 학습 스텝 수 (기본 100000)
-  #   --num_workers=<int>             : DataLoader 워커 수 (기본 4)
-  #   --eval_freq=<int>               : 평가 주기(스텝, 기본 20000)
-  #   --save_freq=<int>               : 체크포인트 저장 주기(스텝, 기본 20000)
-  #   --log_freq=<int>                : 로그 출력 주기(스텝, 기본 200)
-  #   --save_checkpoint=true|false    : 체크포인트 저장 여부 (기본 true)
-  #   --use_policy_training_preset=true|false : 정책별 학습 프리셋 사용 (기본 true)
-  #   --rename_map=<dict>             : 관측 키 이름 변경 매핑
-  #   --wandb.enable=true|false       : WandB 로깅 여부 (기본 false)
-  #   --wandb.project=<str>           : WandB 프로젝트 이름
-  #   --wandb.entity=<str>            : WandB 엔티티
-  #   --wandb.run_id=<str>            : 재개 시 WandB run ID
-  #   --env.type=<str>                : 시뮬레이션 평가 환경 (pusht, aloha, xarm, ...)
+  # [env var → CLI arg 매핑]
+  #   POLICY_SERVER_ADDRESS    → --server_address          (예: 127.0.0.1:8080)
+  #   POLICY_TYPE              → --policy_type             (smolvla 등)
+  #   POLICY_PATH              → --pretrained_name_or_path (lerobot/smolvla_base 등)
+  #   POLICY_DEVICE            → --policy_device           (서버 측, cuda)
+  #   CLIENT_DEVICE            → --client_device           (클라이언트 측, cpu)
+  #   TASK                     → --task                    ("pick the pen" 등)
+  #   ACTIONS_PER_CHUNK        → --actions_per_chunk       (SmolVLA 기본 50)
+  #   CHUNK_SIZE_THRESHOLD     → --chunk_size_threshold    (기본 0.5)
+  #   AGGREGATE_FN_NAME        → --aggregate_fn_name       (weighted_average 등)
+  #   POLICY_CLIENT_FPS        → --fps                     (제어 FPS, 기본 30)
+  #   ROBOT_TYPE/PORT/ID       → --robot.type/.port/.id
+  #   WRIST_CAM_PORT/BELLY...  → --robot.cameras           (teleop 와 동일 매핑)
   #
   # 예시:
-  #   docker compose run --rm teleop train \
-  #     --dataset.repo_id=my_user/so101_pick \
-  #     --policy.type=act \
-  #     --output_dir=/workspace/data/outputs/act \
-  #     --steps=50000 \
-  #     --batch_size=16 \
-  #     --wandb.enable=true
+  #   # 같은 호스트에 정책 서버를 띄워 둔 뒤
+  #   docker compose --env-file .env -f docker/docker-compose.yaml up -d lerobot-policy-server
+  #   # 클라이언트로 붙어 follower 구동
+  #   docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot policy-client
+  #
+  #   # 원격 H100 서버에 접속하려면
+  #   POLICY_SERVER_ADDRESS=10.0.0.5:8080 \
+  #     docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot policy-client
   # ────────────────────────────────────────────────────────────────────────────
-  train)
-    info "── Train 시작 ────────────────────────────────────"
-    shift
-    exec lerobot-train "$@"
+  policy-client)
+    info "── 장치 점검 ─────────────────────────────────────"
+    check_port   "$ROBOT_PORT" "Follower Arm"
+    check_camera "$BELLY_CAM_PORT" "BELLY"
+    check_camera "$WRIST_CAM_PORT" "WRIST"
+
+    info "── Policy Client 시작 (gRPC) ─────────────────────"
+    info "  Server  → ${POLICY_SERVER_ADDRESS}"
+    info "  Policy  → ${POLICY_TYPE} @ ${POLICY_PATH} (device=${POLICY_DEVICE})"
+    info "  Robot   → ${ROBOT_TYPE} ID=${ROBOT_ID} PORT=${ROBOT_PORT}"
+    info "  Task    → ${TASK}"
+    info "  Chunks  → ${ACTIONS_PER_CHUNK} actions, threshold=${CHUNK_SIZE_THRESHOLD}, fps=${POLICY_CLIENT_FPS}"
+
+    shift || true
+    # NOTE: `python -m lerobot.async_inference.robot_client` 대신 shim 을 거쳐
+    # robot config 모듈을 선행 import 한다 (huggingface/lerobot#3078 워크어라운드).
+    # lerobot 이 #3081 픽스를 포함한 버전으로 올라가면 다시 -m 호출로 되돌릴 것.
+    exec python /usr/local/bin/policy-client-shim.py \
+      --server_address=${POLICY_SERVER_ADDRESS} \
+      --policy_type=${POLICY_TYPE} \
+      --pretrained_name_or_path=${POLICY_PATH} \
+      --policy_device=${POLICY_DEVICE} \
+      --client_device=${CLIENT_DEVICE} \
+      --task="${TASK}" \
+      --actions_per_chunk=${ACTIONS_PER_CHUNK} \
+      --chunk_size_threshold=${CHUNK_SIZE_THRESHOLD} \
+      --aggregate_fn_name=${AGGREGATE_FN_NAME} \
+      --fps=${POLICY_CLIENT_FPS} \
+      --robot.type=${ROBOT_TYPE} \
+      --robot.port=${ROBOT_PORT} \
+      --robot.id=${ROBOT_ID} \
+      --robot.cameras="{
+          camera1: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          camera2: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          camera3: {type: opencv, index_or_path: /dev/video4, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          }" \
+      ${POLICY_CLIENT_EXTRA_ARGS} \
+      "$@"
     ;;
 
+  # train / eval ────────────────────────────────────────────────────────────
+  # 이 두 모드는 lerobot-policy-server 서비스 (Dockerfile.smolvla + server-entrypoint.sh)
+  # 로 이동되었다. 이유: SmolVLA 등 정책 학습 시 transformers / accelerate /
+  # num2words 가 필요하나 본 이미지는 teleop + async 그룹만 설치 (smolvla 그룹 미설치).
+  #
+  # 사용 예 (lerobot-policy-server 컨테이너에서 실행):
+  #   docker compose --env-file .env -f docker/docker-compose.yaml run --rm \
+  #     lerobot-policy-server train --dataset.repo_id=... --policy.path=lerobot/smolvla_base ...
+  #   docker compose --env-file .env -f docker/docker-compose.yaml run --rm \
+  #     lerobot-policy-server eval --policy.path=... --env.type=...
   # ────────────────────────────────────────────────────────────────────────────
-  # eval — Policy 평가 및 롤아웃 (모든 인자를 lerobot-eval 에 완전 위임)
-  #
-  # 하드웨어 없음; 시뮬레이션 환경 필요
-  #
-  # [주요 CLI 인자 전체]
-  #   --policy.path=<str>           : Hub ID 또는 로컬 체크포인트 경로 (필수)
-  #   --env.type=<str>              : 평가 환경 타입 (pusht, aloha, xarm, ...)
-  #   --env.task=<str>              : 환경 내 세부 태스크
-  #   --eval.n_episodes=<int>       : 평가 에피소드 수 (기본 50)
-  #   --eval.batch_size=<int>       : 동시 병렬 롤아웃 수 (기본 50)
-  #   --eval.use_async_envs=true    : 비동기 다중 환경 사용 (기본 false)
-  #   --output_dir=<path>           : 결과 저장 경로
-  #   --job_name=<str>              : 실행 이름
-  #   --seed=<int>                  : 난수 시드 (기본 1000)
-  #   --rename_map=<dict>           : 관측 키 이름 변경 매핑
-  #
-  # 예시:
-  #   docker compose run --rm teleop eval \
-  #     --policy.path=my_user/act_so101 \
-  #     --env.type=pusht \
-  #     --eval.n_episodes=20 \
-  #     --eval.batch_size=10
-  # ────────────────────────────────────────────────────────────────────────────
-  eval)
-    info "── Eval 시작 ─────────────────────────────────────"
-    shift
-    exec lerobot-eval "$@"
-    ;;
 
   # ────────────────────────────────────────────────────────────────────────────
   # edit-dataset — 데이터셋 편집 (모든 인자를 lerobot-edit-dataset 에 완전 위임)

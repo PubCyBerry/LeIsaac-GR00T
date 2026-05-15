@@ -66,8 +66,9 @@ services:
       - ../datasets:/workspace/datasets
       - ../logs:/workspace/logs
       - ../outputs:/workspace/outputs
-      # HuggingFace Hub 캐시 재사용 (이미지 다운로드 반복 방지)
-      # - ~/.cache/huggingface:/root/.cache/huggingface
+      # HuggingFace 캐시: 명명 볼륨 `lerobot_hf_cache` (호스트 측 디렉터리는 docker
+      # 가 관리). 컨테이너 재생성 후에도 캐시가 유지되고, 두 서비스가 동일 볼륨을
+      # 공유하므로 한 번 받은 모델을 양쪽이 모두 사용한다.
       - hf_cache:/root/.cache/huggingface
     # ── 환경 변수 ──────────────────────────────────────────────────────────
     # `.env` 값은 env_file 로만 주입한다. 셸 환경의 동명 변수가 docker compose
@@ -95,6 +96,93 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
+    ipc: host
+    stdin_open: true
+    tty: true
+
+  # ── LeRobot Async Inference Policy Server ──────────────────────────────
+  # gRPC :8080 서버. 모델 weight 는 클라이언트가 SendPolicyInstructions RPC 로
+  # 주입(policy-agnostic). 같은 호스트의 robot_client / record 가 127.0.0.1:8080
+  # 으로 접속한다. 추후 Linux H100 서버에 띄우고 Windows 워크스테이션에서 원격
+  # 추론하는 구조도 동일한 이미지로 지원할 예정.
+  #
+  # ■ 이미지 분리 (Dockerfile.smolvla)
+  #   lerobot 서비스(Dockerfile.lerobot, teleop deps) 와 별도 이미지로 빌드한다.
+  #   smolvla / async dependency-groups + transformers + grpcio 를 설치하고,
+  #   USB / serial / speech 패키지는 제거. 향후 GR00T 의 flash-attn 같은
+  #   추론 의존성은 이 이미지에만 추가하므로 teleop 안정성이 격리된다.
+  #
+  # ■ 빌드
+  #   docker compose -f docker/docker-compose.yaml build lerobot-policy-server
+  #
+  # ■ 실행
+  #   docker compose --env-file .env -f docker/docker-compose.yaml \
+  #     up -d lerobot-policy-server
+  #
+  # ■ 클라이언트 예시 (같은 호스트의 lerobot 컨테이너 안에서)
+  #   docker compose --env-file .env -f docker/docker-compose.yaml \
+  #     run --rm lerobot bash -c "
+  #       python -m lerobot.async_inference.robot_client \
+  #         --server_address=127.0.0.1:8080 \
+  #         --policy_type=smolvla \
+  #         --pretrained_name_or_path=lerobot/smolvla_base \
+  #         --policy_device=cuda \
+  #         --robot.type=so101_follower --robot.port=\${ROBOT_PORT} \
+  #         --task='pick the pen' --actions_per_chunk=50 \
+  #         --chunk_size_threshold=0.5
+  #     "
+  lerobot-policy-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.smolvla
+      args:
+        BUILDKT_INLINE_CACHE: "1"
+    image: lerobot-policy-server:0.4.4
+    container_name: so101_policy_server
+    restart: "no"
+    # ── GPU (SmolVLA 추론) ────────────────────────────────────────────────
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # ── 볼륨 ─────────────────────────────────────────────────────────────
+    # USB / 카메라 디바이스 마운트는 제외 (추론 전용, 로봇 직결 안 함).
+    # datasets 는 train 모드에서 SO-101 수집 데이터를 읽기 위해 lerobot 서비스와
+    # 동일 경로를 공유한다.
+    volumes:
+      - ../datasets:/workspace/datasets
+      - ../logs:/workspace/logs
+      - ../outputs:/workspace/outputs
+      # HuggingFace 캐시: lerobot 서비스와 동일한 명명 볼륨 공유.
+      # prepare-model 모드로 받은 가중치를 양쪽 서비스가 그대로 읽어 들인다.
+      - hf_cache:/root/.cache/huggingface
+    # ── 환경 변수 ────────────────────────────────────────────────────────
+    env_file:
+      - ../.env
+    environment:
+      NVIDIA_VISIBLE_DEVICES:     all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    # ── 네트워크 ─────────────────────────────────────────────────────────
+    # host 모드: 동일 호스트의 robot_client / record 가 127.0.0.1:POLICY_SERVER_PORT
+    # 로 직접 접속. 외부 노출이 필요 없으면 호스트 방화벽에서 해당 포트 차단 권장
+    # (CVE-2026-25874: pickle deserialization RCE).
+    network_mode: host
+
+    # ── 기본 명령 ────────────────────────────────────────────────────────
+    # entrypoint.sh policy-server 분기 호출
+    command: ["policy-server"]
+
+    # ── 헬스체크 ─────────────────────────────────────────────────────────
+    # async_inference 모듈 import 만 확인 (gRPC 포트는 모델 로드 후 LISTEN)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import lerobot.async_inference.policy_server"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     ipc: host
     stdin_open: true
     tty: true

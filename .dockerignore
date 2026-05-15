@@ -28,7 +28,10 @@ secrets/
 
 # ── 대용량 데이터 / 모델 ──────────────────────────────────────────────────────
 # 녹화 데이터 — docker-compose volumes 로 런타임에 마운트
-data/
+datasets/
+model/
+outputs/
+logs/
 
 # 로그 — 런타임에 생성됨
 logs/

@@ -1,27 +1,30 @@
 # syntax=docker/dockerfile:1.7
 # =============================================================================
-# Dockerfile.teleop — LeRobot SO-101 Teleoperation
-# Base  : nvidia/cuda:13.0.0-devel-ubuntu24.04
+# Dockerfile.lerobot — LeRobot SO-101 Teleoperation / Record / Replay / Train
+# Base  : nvidia/cuda:12.8.0-runtime-ubuntu24.04
 # Python: 3.11 (managed by uv)
-# Deps   : pyproject.toml [dependency-groups.teleop] 만 설치
+# Deps  : pyproject.toml [dependency-groups.teleop] 만 설치
+#
+# ※ SmolVLA / GR00T 등 정책 서버용 의존성은 Dockerfile.smolvla 에서 별도 빌드.
+#   teleop 이미지에는 추론 모델 의존성을 포함하지 않는다 (안정성 격리).
 #
 # ■ 레이어 캐시 설계 (변경 빈도 낮은 순)
 # ─────────────────────────────────────────
 #   Stage base      : apt 시스템 패키지          → 거의 변경 없음
 #   Stage uv        : uv 바이너리                → 거의 변경 없음
-#   Stage python    : Python 3.12 + venv         → 거의 변경 없음
+#   Stage python    : Python 3.11 + venv         → 거의 변경 없음
 #   Stage torch     : torch / torchvision        → PyTorch 버전 변경 시만
 #   Stage teleop    : lerobot[feetech] 등        → lerobot 버전 변경 시만
 #   Stage app       : 스크립트 / 설정 파일       → 자주 변경
 #
 # ■ 핵심 전략
 #   - torch 를 별도 스테이지로 분리 → lerobot 버전만 바뀌어도 torch 재다운로드 없음
-#   - uv sync --only-group lerobot  → isaac / dev 그룹 의존성 완전 배제
+#   - uv sync --group teleop --group async → grpcio 만 추가, 추론(smolvla) / isaac / dev 그룹 배제
 #   - uv.lock 을 COPY 해 결정론적 설치 보장 (lock 없으면 uv lock 먼저 실행)
 # =============================================================================
 
 # ── Stage 1: System dependencies ─────────────────────────────────────────────
-FROM nvidia/cuda:13.0.0-devel-ubuntu24.04 AS base
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04 AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Seoul
@@ -104,12 +107,14 @@ RUN uv pip install --no-cache \
         --index-url "https://download.pytorch.org/whl/cu128"
 
 
-# ── Stage 5: teleop 그룹 전체 설치 ───────────────────────────────────────────
-# pyproject.toml [dependency-groups.teleop] = torch + torchvision + lerobot[feetech]
-# --active : 현재 활성화된 환경을 사용
-# --frozen : lockfile 이 없거나 pyproject.toml 과 불일치하면 즉시 빌드 실패
-# --only-group teleop : isaac / dev 그룹 완전 배제
-# --no-install-project: 프로젝트 자체(robotics-manipulation 패키지)는 설치 안 함
+# ── Stage 5: teleop + async 그룹 설치 ───────────────────────────────────────
+# pyproject.toml [dependency-groups]:
+#   teleop : lerobot[feetech] + evdev + ffmpeg (실물 Arm 의존성)
+#   async  : grpcio + protobuf — lerobot.async_inference.robot_client 가 정책
+#            서버에 gRPC 로 붙어 follower arm 을 구동하는 `policy-client` 모드에 필요.
+#            패키지 크기 ~50 MB 로 가볍고 transformers 등 무거운 의존성을 끌어오지
+#            않아 teleop 안정성에 영향이 없다 (smolvla / GR00T 본체 의존성은 여전히
+#            Dockerfile.smolvla 에만 설치).
 FROM torch-layer AS teleop-deps
 
 # uv.lock 없이 pyproject.toml constraints 만으로 설치 (로컬 lock 환경에 종속되지 않음).
@@ -119,6 +124,7 @@ COPY pyproject.toml ./
 RUN uv sync \
         --active \
         --group teleop \
+        --group async \
         --no-install-project \
         --no-cache
 
@@ -133,7 +139,9 @@ COPY docker/99-feetech.rules /etc/udev/rules.d/99-feetech.rules
 
 # 실행 진입점 (teleop / record / replay / bash 모드 지원)
 COPY docker/lerobot-entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# policy-client shim — lerobot#3078 워크어라운드 (robot config 사전 import 후 robot_client 실행)
+COPY docker/policy-client-shim.py /usr/local/bin/policy-client-shim.py
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/policy-client-shim.py
 
 # 런타임 환경 변수 고정
 ENV VIRTUAL_ENV=/opt/venv \

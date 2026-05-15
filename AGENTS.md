@@ -2,7 +2,7 @@
 
 ## 프로젝트 개요
 
-SO-ARM101 6축 로봇 팔용 **Docker 기반 LeRobot 파이프라인**. `docker/docker-compose.yaml` 의 `lerobot` 서비스 단일 컨테이너가 `docker/lerobot-entrypoint.sh` 를 통해 텔레오퍼레이션·데이터 수집·정책 학습·추론·시각화 모드를 모두 디스패치한다. LeRobot 호환 모델이라면 어느 것이든 학습·추론 가능.
+SO-ARM101 6축 로봇 팔용 **Docker 기반 LeRobot 파이프라인**. `docker/docker-compose.yaml` 의 두 서비스가 각자의 진입점을 사용한다: `lerobot` (Dockerfile.lerobot + `lerobot-entrypoint.sh`, teleop deps) 가 텔레오퍼레이션·데이터 수집·정책 학습·시각화를, `lerobot-policy-server` (Dockerfile.smolvla + `server-entrypoint.sh`, smolvla+async deps) 가 async inference gRPC 서버를 담당. SmolVLA 가 기본 정책이며 GR00T N1.5(flash-attn 필요) 등은 정책 서버 이미지에만 의존성을 추가한다. LeRobot 호환 모델이라면 어느 것이든 학습·추론 가능.
 
 > 시뮬레이션 경로(LeIsaac on Isaac Sim 5.1)는 임시 비활성 상태(`Dockerfile.leisaac` 만 보존, docker-compose 에 미연결). 현재 활성 워크플로는 실기기(`lerobot-*`) 경로뿐이다.
 
@@ -24,13 +24,18 @@ SO-ARM101 6축 로봇 팔용 **Docker 기반 LeRobot 파이프라인**. `docker/
 
 ## Docker 컨테이너 구조
 
-- **활성 서비스**: `lerobot` (이미지 `lerobot-so101:0.4.4`, `docker/Dockerfile.lerobot`). `docker compose -f docker/docker-compose.yaml build lerobot` 으로 빌드.
-- **휴면 Dockerfile**: `Dockerfile.leisaac` / `Dockerfile.smolvla` / `Dockerfile.gr00t` — `docker-compose.yaml` 에 연결되어 있지 않으며 필요 시 수동 빌드. 시뮬 경로 복원 시 leisaac 부터 재연결.
-- **빌드 스테이지** (`Dockerfile.lerobot`): base(`nvidia/cuda:13.0.0-devel-ubuntu24.04` + apt) → uv → python 3.11 venv → torch 2.7.0/torchvision 0.22.0 (cu128) → `uv sync --only-group teleop --no-install-project` → app(udev rules + entrypoint).
+- **활성 서비스**:
+  - `lerobot` (이미지 `lerobot-so101:0.4.4`, `docker/Dockerfile.lerobot`) — teleop / record / replay / train / eval / dataset-viz. `docker compose -f docker/docker-compose.yaml build lerobot`.
+  - `lerobot-policy-server` (이미지 `lerobot-policy-server:0.4.4`, `docker/Dockerfile.smolvla`) — async inference gRPC 서버 (`entrypoint.sh policy-server`). `docker compose -f docker/docker-compose.yaml build lerobot-policy-server`. teleop 이미지와 의존성 격리: GR00T 의 flash-attn / 원격 inference(H100 ↔ Windows) 확장 대비.
+- **휴면 Dockerfile**: `Dockerfile.leisaac` / `Dockerfile.gr00t` — `docker-compose.yaml` 에 연결되어 있지 않으며 필요 시 수동 빌드. 시뮬 경로 복원 시 leisaac 부터 재연결.
+- **빌드 스테이지** (`Dockerfile.lerobot` / `Dockerfile.smolvla` 가 Stage 1–4 동일 → BuildKit 캐시 공유): base(`nvidia/cuda:12.8.0-runtime-ubuntu24.04` + apt) → uv → python 3.11 venv → torch 2.7.0/torchvision 0.22.0 (cu128) → `uv sync --group <teleop|smolvla async> --no-install-project` → app(entrypoint, teleop 만 udev rules).
 - **디바이스 마운트**: `${TELEOP_PORT}` `${ROBOT_PORT}` (직렬 암), `${BELLY_CAM_PORT}` `${BELLY_CAM_META_PORT}` `${WRIST_CAM_PORT}` `${WRIST_CAM_META_PORT}` (UVC 캡처/메타 노드 쌍).
-- **호스트 볼륨**: `./datasets`, `./logs`, `./outputs` → 컨테이너 `/workspace/*`. 명명 볼륨 `lerobot_hf_cache` → `/root/.cache/huggingface` (HF 캐시 재사용).
+- **호스트 볼륨**: `./datasets`, `./logs`, `./outputs` → 컨테이너 `/workspace/*`. 명명 볼륨 `lerobot_hf_cache` → `/root/.cache/huggingface` (두 서비스 공유). 다른 머신으로 옮길 때는 `docker run -v lerobot_hf_cache:/cache alpine tar czf ...` 로 export 후 전송.
 - **권한·네트워크**: `privileged: true` (udev/USB 접근), `network_mode: host` (rerun 뷰어·ROS 브릿지), `ipc: host`. GPU 1장 예약 (`deploy.resources.reservations.devices`).
-- **단일 진입점**: `entrypoint.sh` 첫 인자가 모드를 결정 (`teleop` / `record` / `replay` / `calibrate` / `setup-motors` / `find-port` / `find-cameras` / `find-joint-limits` / `dataset-viz` / `train` / `eval` / `edit-dataset` / `info` / `bash` / `python`). 모드별 env var 매핑은 `entrypoint.sh` L37-95 의 `${VAR:-default}` 블록과 각 case 분기 주석에 정리되어 있다.
+- **서비스별 진입점**:
+  - `docker/lerobot-entrypoint.sh` (lerobot 서비스): `teleop` / `record` / `replay` / `calibrate` / `setup-motors` / `find-port` / `find-cameras` / `find-joint-limits` / `dataset-viz` / `policy-client` / `edit-dataset` / `info` / `bash` / `python`. `policy-client` 는 `lerobot.async_inference.robot_client` 로 정책 서버에 gRPC 접속해 SO-101 follower 를 구동 — `async` 의존성 그룹(grpcio + protobuf) 이 teleop 이미지에도 함께 설치된다.
+  - `docker/server-entrypoint.sh` (lerobot-policy-server 서비스): `prepare-model` / `policy-server` / `train` / `eval` / `info` / `bash` / `python`. CMD 기본값 `policy-server`. **train/eval 은 이쪽**: SmolVLA 학습이 필요로 하는 transformers / accelerate / num2words 가 `smolvla` 그룹에만 있고 lerobot 이미지에 미설치이기 때문.
+  - 모드별 env var 매핑은 각 스크립트 상단 `${VAR:-default}` 블록과 case 분기 주석에 정리되어 있다.
 - **`.env` 주입 경로**: `docker compose --env-file .env` 가 컨테이너에 환경변수로 주입하고, `entrypoint.sh` 가 기본값을 채워 `lerobot-*` CLI 인자로 매핑.
 
 ## 의존성 호환성 규칙

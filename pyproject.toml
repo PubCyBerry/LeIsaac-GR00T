@@ -42,6 +42,8 @@ dependencies = [
     # LeRobot >= 0.4.2 + feetech extra
     #   feetech extra 포함 내용: feetech-servo-sdk, pyserial, opencv-python,
     #   huggingface-hub, datasets, draccus, gym, safetensors 등
+    # SmolVLA / async 의존성은 Dockerfile.smolvla 가 dependency-groups
+    # (smolvla, async) 로 별도 설치 → teleop 이미지는 가볍게 유지
     "lerobot[feetech]>=0.4.2",
     # PyTorch — CUDA 12.8 빌드 (pytorch-cu128 index 에서 설치, 아래 sources 참조)
     "torch>=2.7",
@@ -64,6 +66,25 @@ teleop = [
     # Windows에서는 설치 불가 → sys_platform 마커로 lockfile 생성 실패 방지
     "evdev>=1.7; sys_platform == 'linux'",
     "packaging>=25.0",
+]
+
+# ── smolvla: SmolVLA policy 추론/학습 보조 의존성 ────────────────────────────
+# `lerobot[smolvla]` extras 가 transformers / num2words / accelerate / safetensors
+# 를 끌어오며, 본 그룹은 추가 핀과 함께 정책 서버 이미지(Dockerfile.smolvla) 에서만
+# 설치된다. teleop 이미지(Dockerfile.lerobot) 에는 포함하지 않음.
+smolvla = [
+    "lerobot[smolvla]>=0.4.2",
+    "num2words>=0.5.14,<0.6.0",
+    "accelerate>=1.7.0,<2.0.0",
+    "safetensors>=0.4.3,<1.0.0",
+]
+
+# ── async: Async inference policy server (gRPC) ──────────────────────────────
+# lerobot.async_inference.policy_server / robot_client 가 의존하는 gRPC 스택.
+# 정책 서버 이미지에서만 설치된다.
+async = [
+    "grpcio==1.73.1",
+    "protobuf>=6.31.1,<6.32.0",
 ]
 
 # ── isaac: Isaac Sim / IsaacLab 시뮬레이션 환경 ─────────────────────────────
