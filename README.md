@@ -28,7 +28,7 @@ flowchart LR
     classDef policyNode fill:#ffcdd2,stroke:#c62828,color:#b71c1c
 
     LEAD["🦾 SO-101 리더 암"]:::hw
-    CAM["📷 카메라 ×2<br/>640×480@25fps MJPG<br/>~30 MB/s"]:::hw
+    CAM["📷 카메라 ×3<br/>640×480@25fps MJPG<br/>~45 MB/s"]:::hw
 
     subgraph CON["📦 lerobot 컨테이너"]
         direction TB
@@ -411,6 +411,7 @@ docker compose --env-file .env -f docker/docker-compose.yaml run \
         --robot.cameras="{
             wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
             belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+            top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
             }" \
         --robot.id=${ROBOT_ID} \
         --teleop.type=so101_leader \
@@ -592,6 +593,7 @@ docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot \
         --robot.cameras="{
             wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
             belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+            top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
             }" \
         --task='pick the pen' \
         --actions_per_chunk=50 \

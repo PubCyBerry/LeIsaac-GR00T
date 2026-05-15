@@ -232,6 +232,7 @@ case "$CMD" in
   #   TELEOP_ID      → --teleop.id
   #   WRIST_CAM_PORT  → --robot.cameras wrist index_or_path
   #   BELLY_CAM_PORT  → --robot.cameras belly index_or_path
+  #   TOP_CAM_PORT  → --robot.cameras top index_or_path
   #   CAM_WIDTH/HEIGHT/FPS → cameras 해상도·FPS
   #
   # [주요 CLI 인자 — TELEOP_EXTRA_ARGS 로 추가 전달 가능]
@@ -265,6 +266,7 @@ case "$CMD" in
       --robot.cameras="{
           wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
           belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
           }" \
       --robot.id=${ROBOT_ID} \
       --teleop.type=so101_leader \
@@ -279,7 +281,7 @@ case "$CMD" in
   # [env var → CLI arg 매핑]
   #   ROBOT_PORT/ID        → --robot.port / --robot.id
   #   TELEOP_PORT/ID          → --teleop.port / --teleop.id
-  #   WRIST/BELLY_CAM_PORT     → --robot.cameras (teleop 와 동일)
+  #   WRIST/BELLY/TOP_CAM_PORT     → --robot.cameras (teleop 와 동일)
   #   CAM_WIDTH/HEIGHT/FPS    → cameras 해상도·FPS
   #   HF_DATASET_REPO_ID      → --dataset.repo_id        (필수)
   #   SINGLE_TASK             → --dataset.single_task
@@ -338,6 +340,7 @@ case "$CMD" in
       --robot.cameras="{
           wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
           belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
           }" \
       --teleop.type=${TELEOP_TYPE} \
       --teleop.port=${TELEOP_PORT} \
@@ -655,9 +658,9 @@ case "$CMD" in
       --robot.port=${ROBOT_PORT} \
       --robot.id=${ROBOT_ID} \
       --robot.cameras="{
-          camera1: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          camera2: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
-          camera3: {type: opencv, index_or_path: /dev/video4, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          wrist: {type: opencv, index_or_path: ${WRIST_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          belly: {type: opencv, index_or_path: ${BELLY_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
+          top: {type: opencv, index_or_path: ${TOP_CAM_PORT}, width: ${CAM_WIDTH}, height: ${CAM_HEIGHT}, fps: ${CAM_FPS}, warmup_s: ${CAM_WARMUP_S}, fourcc: ${CAM_FOURCC}},
           }" \
       ${POLICY_CLIENT_EXTRA_ARGS} \
       "$@"
