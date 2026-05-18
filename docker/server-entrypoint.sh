@@ -22,6 +22,8 @@
 #                   INFERENCE_LATENCY   OBS_QUEUE_TIMEOUT   POLICY_SERVER_EXTRA_ARGS
 #   train / eval  : 인자 완전 위임. .env 의 POLICY_TYPE / POLICY_PATH / DATASET / WANDB
 #                   변수를 셸 보간으로 채워 호출한다 (README §Policy 학습 참조).
+#                   NUM_WORKERS(기본 8) / COMPILE_MODEL / MIXED_PRECISION(bf16) /
+#                   NUM_PROCESSES(2 이상이면 accelerate launch DDP 전환) 로 속도 최적화.
 #   공통           : (HF 캐시는 명명 볼륨 lerobot_hf_cache → /root/.cache/huggingface)
 # =============================================================================
 set -euo pipefail
@@ -61,6 +63,29 @@ JOB_NAME="${JOB_NAME:-}"
 DEVICE="${DEVICE:-cuda}"
 WANDB_ENABLE="${WANDB_ENABLE:-false}"
 TRAIN_EXTRA_ARGS="${TRAIN_EXTRA_ARGS:-}"
+# ── 학습 속도 최적화 환경 변수 ────────────────────────────────────────────────
+# NUM_WORKERS: 데이터로더 병렬 워커 수. 224코어 서버 기준 8이 기본값.
+#   → lerobot 기본값(4)보다 높여 데이터 로딩 병목 완화.
+#   → GPU 메모리 부족 시 낮추고, 빠른 NVMe + 고코어 환경에서는 16까지 늘릴 수 있음.
+NUM_WORKERS="${NUM_WORKERS:-8}"
+# COMPILE_MODEL: torch.compile 활성화 (true/false).
+#   → 첫 번째 스텝에 컴파일 비용(수 분)이 발생하나 이후 스텝이 ~20-30% 빨라짐.
+#   → 장기 학습(10K+ steps)에서 손익분기점 도달. 단기 디버깅에는 false 권장.
+COMPILE_MODEL="${COMPILE_MODEL:-false}"
+# COMPILE_MODE: torch.compile 모드.
+#   reduce-overhead  — 재컴파일 최소화, 안정적 (기본)
+#   max-autotune     — 커널 자동 탐색으로 최대 속도, 컴파일 시간 더 김
+COMPILE_MODE="${COMPILE_MODE:-reduce-overhead}"
+# NUM_PROCESSES: accelerate launch 프로세스 수 (= 사용 GPU 수).
+#   1   — 단일 GPU (기본, Windows RTX A4000)
+#   2   — 멀티 GPU (Linux H100 × 2)
+#   → 2 이상이면 'accelerate launch --num_processes' 로 자동 전환.
+NUM_PROCESSES="${NUM_PROCESSES:-1}"
+# MIXED_PRECISION: accelerate 혼합 정밀도 모드.
+#   bf16 — H100/A100 등 Ampere+ 에서 권장 (수치 안정성 우수, 속도↑)
+#   fp16 — 구형 Volta/Turing GPU 호환
+#   no   — 혼합 정밀도 미사용 (디버깅용)
+MIXED_PRECISION="${MIXED_PRECISION:-bf16}"
 
 # ── 색상 출력 유틸 ────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
@@ -261,13 +286,36 @@ case "$CMD" in
     [[ -n "${JOB_NAME}" ]]           && TRAIN_ARGS+=("--job_name=${JOB_NAME}")
     [[ -n "${WANDB_ENABLE}" ]]       && TRAIN_ARGS+=("--wandb.enable=${WANDB_ENABLE}")
     [[ -n "${DEVICE}" ]]             && TRAIN_ARGS+=("--policy.device=${DEVICE}")
-    info "  Dataset  → ${HF_DATASET_REPO_ID:-<미설정>}"
-    info "  Policy   → type=${POLICY_TYPE:-<미설정>}  path=${POLICY_PATH:-none}"
-    info "  Output   → ${OUTPUT_DIR:-<미설정>}"
-    info "  Steps    → ${TRAIN_STEPS}  Batch → ${BATCH_SIZE}  Device → ${DEVICE}"
+    # ── 속도 최적화 인자 ──────────────────────────────────────────────────────
+    TRAIN_ARGS+=("--num_workers=${NUM_WORKERS}")
+    [[ "${COMPILE_MODEL}" == "true" ]] && TRAIN_ARGS+=(
+        "--policy.compile_model=true"
+        "--policy.compile_mode=${COMPILE_MODE}"
+    )
+    info "  Dataset      → ${HF_DATASET_REPO_ID:-<미설정>}"
+    info "  Policy       → type=${POLICY_TYPE:-<미설정>}  path=${POLICY_PATH:-none}"
+    info "  Output       → ${OUTPUT_DIR:-<미설정>}"
+    info "  Steps        → ${TRAIN_STEPS}  Batch → ${BATCH_SIZE}  Device → ${DEVICE}"
+    info "  Workers      → ${NUM_WORKERS}"
+    info "  Compile      → ${COMPILE_MODEL}  mode=${COMPILE_MODE}"
+    info "  Precision    → ${MIXED_PRECISION}  Processes → ${NUM_PROCESSES}"
+    # ── 멀티-GPU / 혼합 정밀도 실행 분기 ────────────────────────────────────────
+    # NUM_PROCESSES > 1: accelerate launch 로 DDP 멀티-GPU 학습
+    # NUM_PROCESSES = 1: 환경변수 ACCELERATE_MIXED_PRECISION 만 주입해 단일 GPU 실행
+    #   accelerate 는 Accelerator() 초기화 시 이 env var 를 자동으로 읽는다.
     # TRAIN_EXTRA_ARGS: word-split 의도적 (복수 플래그 지원)
-    # "$@": 추가 CLI 인자 (예: --resume=true). env var 빌드 값보다 뒤에 위치해 last-wins 로 덮어씀
-    exec lerobot-train "${TRAIN_ARGS[@]}" ${TRAIN_EXTRA_ARGS} "$@"
+    # "$@": 추가 CLI 인자. env var 빌드 값보다 뒤에 위치해 last-wins 로 덮어씀
+    if [[ "${NUM_PROCESSES}" -gt 1 ]]; then
+        info "  → accelerate launch (DDP, ${NUM_PROCESSES} GPU)"
+        exec accelerate launch \
+            --mixed_precision="${MIXED_PRECISION}" \
+            --num_processes="${NUM_PROCESSES}" \
+            -m lerobot.scripts.lerobot_train "${TRAIN_ARGS[@]}" ${TRAIN_EXTRA_ARGS} "$@"
+    else
+        info "  → lerobot-train (단일 GPU)"
+        export ACCELERATE_MIXED_PRECISION="${MIXED_PRECISION}"
+        exec lerobot-train "${TRAIN_ARGS[@]}" ${TRAIN_EXTRA_ARGS} "$@"
+    fi
     ;;
 
   # ────────────────────────────────────────────────────────────────────────────

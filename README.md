@@ -383,6 +383,12 @@ docker compose --env-file .env -f docker/docker-compose.yaml run --rm lerobot ba
 | DEVICE | 가속기 종류(기본값은 `cuda`) |
 | WANDB_ENABLE | wandb 연동 여부(기본값은 `false`) |
 | TRAIN_EXTRA_ARGS | 추가 `lerobot-train` 인자 |
+| **학습 속도 최적화** | |
+| NUM_WORKERS | 데이터로더 병렬 워커 수 (기본 `8`). 224코어 H100 서버에서 기본값으로 충분하며 더 높일 수도 있음 |
+| COMPILE_MODEL | `torch.compile` 활성화 (`true`/`false`, 기본 `false`). 10K+ steps 장기 학습에서 ~20–30% 속도 향상. 첫 스텝에 수 분 컴파일 비용 발생 |
+| COMPILE_MODE | 컴파일 모드 (기본 `reduce-overhead`). `max-autotune` 은 커널 자동 탐색으로 최대 속도, 컴파일 시간 더 김 |
+| NUM_PROCESSES | 사용 GPU 수 (기본 `1`). `2` 이상 지정 시 `accelerate launch --num_processes` DDP 멀티-GPU 학습으로 자동 전환 (H100 × 2 에서는 `2` 권장) |
+| MIXED_PRECISION | 혼합 정밀도 모드 (기본 `bf16`). H100/A100 등 Ampere+ 에서 `bf16` 권장. 구형 GPU 는 `fp16`, 비활성화는 `no` |
 
 **호출 컨테이너는 `lerobot-policy-server`** (Dockerfile.smolvla 에만 transformers / accelerate / num2words 가 설치됨 — lerobot 이미지에서는 SmolVLA 학습 불가). `server-entrypoint.sh` 가 컨테이너 내부 env var에서 CLI 인자를 조립하므로 `.env` 만 채우면 된다.
 
